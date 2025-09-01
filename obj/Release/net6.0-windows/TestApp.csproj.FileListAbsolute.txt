@@ -1,0 +1,4 @@
+C:\DesktopMascot_v2\obj\Release\net6.0-windows\TestApp.GeneratedMSBuildEditorConfig.editorconfig
+C:\DesktopMascot_v2\obj\Release\net6.0-windows\TestApp.AssemblyInfoInputs.cache
+C:\DesktopMascot_v2\obj\Release\net6.0-windows\TestApp.AssemblyInfo.cs
+C:\DesktopMascot_v2\obj\Release\net6.0-windows\TestApp.csproj.CoreCompileInputs.cache
