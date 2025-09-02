@@ -232,13 +232,15 @@ namespace DesktopMascot
                 return IsLoading ? "読み込み中…" : "記事がありません";
             }
 
-            // タイトルと説明文を常に表示
+            // タイトルと説明文のみ表示（URLはボタンで処理）
+            var displayText = Current.Title;
+            
             if (!string.IsNullOrEmpty(Current.Summary))
             {
-                return $"{Current.Title}\n\n{Current.Summary}";
+                displayText += $"\n\n{Current.Summary}";
             }
 
-            return Current.Title;
+            return displayText;
         }
 
         public RssItem GetCurrentItem()

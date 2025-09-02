@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DesktopMascot")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+45b7f4fd086c7b272eadf6aeb7b2ff6464626f22")]
 [assembly: System.Reflection.AssemblyProductAttribute("DesktopMascot")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DesktopMascot")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

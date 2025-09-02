@@ -19,6 +19,9 @@ namespace DesktopMascot
         private ContextMenuStrip _contextMenu;
         private Timer _renderTimer;
         private bool _bubbleVisible = true;
+        private bool _isDragging = false;
+        private Point _dragStartPoint;
+        private Rectangle _linkButtonRect = Rectangle.Empty;
 
         [DllImport("user32.dll")]
         private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
@@ -169,12 +172,12 @@ namespace DesktopMascot
                 }
             }
             
-            // ウィンドウサイズは左側バブル + 中央空間 + 右側画像（200×200）
+            // ウィンドウサイズは左側バブル + 中央空間 + 右側画像（150×150）
             var bubbleWidth = Settings.Current.Bubble.Width;
-            var imageSize = 200;
-            var spacing = 80; // バブルと画像の間のスペース
+            var imageSize = 150;
+            var spacing = 60; // バブルと画像の間のスペース（縮小）
             var totalWidth = bubbleWidth + spacing + imageSize + 40; // 左右余白20px×2
-            var totalHeight = Math.Max(imageSize + 40, 250); // 上下余白20px×2、最小高さ250px
+            var totalHeight = Math.Max(imageSize + 40, 220); // 上下余白20px×2、最小高さ220px
             
             ClientSize = new Size(totalWidth, totalHeight);
         }
@@ -190,28 +193,35 @@ namespace DesktopMascot
             {
                 var graphics = e.Graphics;
                 graphics.Clear(Color.Magenta);  // 透明化用のキーカラー
-                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                // アンチエイリアシングを無効化して透明化処理を正確に
+                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighSpeed;
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
                 
-                // 画像を右側に配置（200×200）
-                var imageSize = 200;
+                // 画像を右側に配置（150×150）
+                var imageSize = 150;
                 var imageX = ClientSize.Width - imageSize - 20; // 右から20pxの余白
                 var imageY = ClientSize.Height - imageSize - 20; // 下から20pxの余白
                 
                 if (_mascotImage != null)
                 {
                     var destRect = new Rectangle(imageX, imageY, imageSize, imageSize);
+                    // 画像描画時は補間モードを最近傍に設定してマゼンタの混色を防ぐ
+                    var originalInterpolationMode = graphics.InterpolationMode;
+                    graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
                     graphics.DrawImage(_mascotImage, destRect);
+                    graphics.InterpolationMode = originalInterpolationMode;
                 }
                 else
                 {
                     using (var brush = new SolidBrush(Color.White))
                     {
-                        graphics.FillEllipse(brush, imageX + 50, imageY + 50, 100, 100);
+                        graphics.FillEllipse(brush, imageX + 25, imageY + 25, 100, 100);
                     }
-                    using (var font = new Font("Arial", 16))
+                    using (var font = new Font("Arial", 14))
                     using (var brush = new SolidBrush(Color.Black))
                     {
-                        graphics.DrawString("MASCOT", font, brush, imageX + 60, imageY + 90);
+                        graphics.DrawString("MASCOT", font, brush, imageX + 35, imageY + 70);
                     }
                 }
 
@@ -239,6 +249,8 @@ namespace DesktopMascot
             var padding = settings.Padding;
             var cornerRadius = settings.CornerRadius;
 
+            // 吹き出し描画時のみアンチエイリアシングを有効化
+            var originalSmoothingMode = graphics.SmoothingMode;
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
@@ -270,28 +282,57 @@ namespace DesktopMascot
 
                 _bubbleRect = new Rectangle(bubbleX, bubbleY, bubbleWidth, bubbleHeight);
 
-                // 既存UIスタイルの角丸吹き出しを描画
-                var bgColor = Color.FromArgb((int)(settings.Opacity * 255), 240, 240, 240);
+                // 黒い吹き出しを描画
+                var bgColor = Color.FromArgb((int)(settings.Opacity * 255), 0, 0, 0);
                 using (var bgBrush = new SolidBrush(bgColor))
-                using (var borderPen = new Pen(Color.FromArgb(100, 200, 200, 200), 1))
+                using (var borderPen = new Pen(Color.FromArgb(200, 100, 100, 100), 2))
                 {
                     DrawRoundedRectangle(graphics, _bubbleRect, cornerRadius, bgBrush, borderPen);
                 }
 
-                // テキストを描画
-                _textRect = new Rectangle(bubbleX + padding, bubbleY + padding, 
-                                        bubbleWidth - padding * 2, textHeight);
-                using (var textBrush = new SolidBrush(Color.FromArgb(255, 30, 30, 30)))
+                // テキストを描画（URL部分を除く）
+                var currentItem = _rssTicker?.GetCurrentItem();
+                var displayText = currentItem?.Title ?? text;
+                if (!string.IsNullOrEmpty(currentItem?.Summary))
                 {
-                    var displayText = text;
-                    if (settings.ShowOpenHint && !text.EndsWith("…") && !text.Contains("読み込み"))
-                        displayText += " ↗";
-                        
+                    displayText += $"\n\n{currentItem.Summary}";
+                }
+                
+                _textRect = new Rectangle(bubbleX + padding, bubbleY + padding, 
+                                        bubbleWidth - padding * 2, textHeight - 40);
+                using (var textBrush = new SolidBrush(Color.White))
+                {
                     graphics.DrawString(displayText, font, textBrush, _textRect, stringFormat);
+                }
+                
+                // リンクボタンを描画
+                if (currentItem != null && !string.IsNullOrEmpty(currentItem.Link))
+                {
+                    var buttonY = bubbleY + bubbleHeight - 35;
+                    _linkButtonRect = new Rectangle(bubbleX + padding, buttonY, 100, 25);
+                    
+                    using (var buttonBrush = new SolidBrush(Color.FromArgb(255, 0, 255, 0))) // 蛍光緑
+                    using (var buttonBorderPen = new Pen(Color.FromArgb(255, 0, 200, 0), 2))
+                    using (var buttonTextBrush = new SolidBrush(Color.Black))
+                    {
+                        graphics.FillRectangle(buttonBrush, _linkButtonRect);
+                        graphics.DrawRectangle(buttonBorderPen, _linkButtonRect);
+                        
+                        var buttonFormat = new StringFormat
+                        {
+                            Alignment = StringAlignment.Center,
+                            LineAlignment = StringAlignment.Center
+                        };
+                        graphics.DrawString("記事を開く", font, buttonTextBrush, _linkButtonRect, buttonFormat);
+                        buttonFormat.Dispose();
+                    }
                 }
                 
                 stringFormat.Dispose();
             }
+            
+            // 元のSmoothingModeに戻す
+            graphics.SmoothingMode = originalSmoothingMode;
         }
 
         private void DrawRoundedRectangle(Graphics graphics, Rectangle rect, int cornerRadius, Brush brush, Pen pen)
@@ -418,39 +459,21 @@ namespace DesktopMascot
         {
             base.OnMouseClick(e);
             
-            if (e.Button == MouseButtons.Left)
+            if (e.Button == MouseButtons.Right)
             {
-                // 吹き出しクリックで次の記事へ
+                // 右クリックで次の記事に移動
                 if (_bubbleVisible && _bubbleRect.Contains(e.Location))
                 {
                     _rssTicker?.Next();
                     return;
                 }
-                
-                // 画像領域のクリック（画像変更）
-                ShowImageChangeDialog();
             }
-            else if (e.Button == MouseButtons.Right)
+            else if (e.Button == MouseButtons.Left && !_isDragging)
             {
-                // 右クリックで記事を開く
-                if (_bubbleVisible && _bubbleRect.Contains(e.Location))
+                // 吹き出し以外の場所での画像変更
+                if (!(_bubbleVisible && _bubbleRect.Contains(e.Location)))
                 {
-                    var currentItem = _rssTicker?.GetCurrentItem();
-                    if (currentItem != null && !string.IsNullOrEmpty(currentItem.Link))
-                    {
-                        try
-                        {
-                            Process.Start(new ProcessStartInfo(currentItem.Link) 
-                            { 
-                                UseShellExecute = true 
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Failed to open URL: {ex.Message}");
-                        }
-                    }
-                    return;
+                    ShowImageChangeDialog();
                 }
             }
         }
@@ -498,6 +521,77 @@ namespace DesktopMascot
         {
             base.OnMouseLeave(e);
             _rssTicker?.Resume();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            
+            if (e.Button == MouseButtons.Left)
+            {
+                // リンクボタンクリック
+                if (_bubbleVisible && _linkButtonRect.Contains(e.Location))
+                {
+                    var currentItem = _rssTicker?.GetCurrentItem();
+                    if (currentItem != null && !string.IsNullOrEmpty(currentItem.Link))
+                    {
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo(currentItem.Link) 
+                            { 
+                                UseShellExecute = true 
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Failed to open URL: {ex.Message}");
+                        }
+                    }
+                    return;
+                }
+                
+                // 吹き出しクリックで次の記事表示
+                if (_bubbleVisible && _bubbleRect.Contains(e.Location))
+                {
+                    _rssTicker?.Next();
+                    return;
+                }
+                
+                // マスコット画像のドラッグ開始
+                _isDragging = true;
+                _dragStartPoint = e.Location;
+                this.Capture = true;
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            
+            if (_isDragging && e.Button == MouseButtons.Left)
+            {
+                // ウィンドウを移動
+                var currentLocation = this.Location;
+                this.Location = new Point(
+                    currentLocation.X + (e.X - _dragStartPoint.X),
+                    currentLocation.Y + (e.Y - _dragStartPoint.Y)
+                );
+            }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            
+            if (_isDragging)
+            {
+                _isDragging = false;
+                this.Capture = false;
+                
+                // 位置を設定に保存（オプション）
+                // Settings.Current.Position = this.Location;
+                // Settings.Save();
+            }
         }
 
         private void ShowImageChangeDialog()

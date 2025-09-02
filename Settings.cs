@@ -50,7 +50,7 @@ namespace DesktopMascot
         public float Opacity { get; set; } = 0.92f;
         public string FontName { get; set; } = "Meiryo UI";
         public int FontSize { get; set; } = 12;
-        public int LineClamp { get; set; } = 6;
+        public int LineClamp { get; set; } = 8;
         public bool ShowOpenHint { get; set; } = true;
         public bool ShowDescription { get; set; } = true;
         public int MaxDescriptionLength { get; set; } = 150;
