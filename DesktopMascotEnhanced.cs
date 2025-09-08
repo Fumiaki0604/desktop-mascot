@@ -400,7 +400,7 @@ namespace DesktopMascot
         private void InitializeComponent()
         {
             Width = 420;  // 350 * 1.2 = 420
-            Height = 280;
+            Height = 196;  // 280 * 0.7 = 196（30%縮小）
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -460,11 +460,11 @@ namespace DesktopMascot
                 Margin = new Thickness(0, 0, 0, 10)
             };
 
-            // サムネイル画像
+            // サムネイル画像（20%拡大: 120→144, 80→96）
             ThumbnailImage = new Image
             {
-                MaxWidth = 120,
-                MaxHeight = 80,
+                MaxWidth = 144,
+                MaxHeight = 96,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Margin = new Thickness(0, 0, 0, 10),
                 Stretch = Stretch.Uniform
