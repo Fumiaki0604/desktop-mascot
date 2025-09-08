@@ -399,8 +399,8 @@ namespace DesktopMascot
 
         private void InitializeComponent()
         {
-            Width = 420;  // 350 * 1.2 = 420
-            Height = 196;  // 280 * 0.7 = 196（30%縮小）
+            Width = 420;  // 横幅はそのまま
+            Height = 172;  // 指定された縦幅172px
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -443,7 +443,7 @@ namespace DesktopMascot
 
             TitleBlock = new TextBlock
             {
-                FontSize = 12,
+                FontSize = 14,  // 12→14（+2）
                 FontWeight = FontWeights.Bold,
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 0, 10, 0)
@@ -455,16 +455,16 @@ namespace DesktopMascot
             // 内容
             ContentBlock = new TextBlock
             {
-                FontSize = 10,
+                FontSize = 12,  // 10→12（+2）
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 0, 0, 10)
             };
 
-            // サムネイル画像（20%拡大: 120→144, 80→96）
+            // サムネイル画像（横150px、縦270px）
             ThumbnailImage = new Image
             {
-                MaxWidth = 144,
-                MaxHeight = 96,
+                MaxWidth = 150,
+                MaxHeight = 270,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Margin = new Thickness(0, 0, 0, 10),
                 Stretch = Stretch.Uniform
