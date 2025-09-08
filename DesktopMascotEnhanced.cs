@@ -688,6 +688,22 @@ namespace DesktopMascot
             _settings.WindowLeft = Left;
             _settings.WindowTop = Top;
             _settings.Save();
+            
+            // スピーチバブルが表示されている場合は位置を更新
+            if (_speechBubble != null && _speechBubble.IsVisible)
+            {
+                UpdateSpeechBubblePosition();
+            }
+        }
+
+        private void UpdateSpeechBubblePosition()
+        {
+            if (_speechBubble != null)
+            {
+                var newPosition = GetBubblePosition();
+                _speechBubble.Left = newPosition.X;
+                _speechBubble.Top = newPosition.Y;
+            }
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)
@@ -829,14 +845,25 @@ namespace DesktopMascot
         {
             if (!_rssService.Articles.Any())
             {
-                var position = new Point(Left + Width + 10, Top);
+                var position = GetBubblePosition();
                 _speechBubble.ShowBubble(position, "記事がありません", "RSS更新を実行してください。", "", 0, 0);
                 return;
             }
 
             var article = _rssService.Articles[_currentArticleIndex];
-            var bubblePosition = new Point(Left + Width + 10, Top);
+            var bubblePosition = GetBubblePosition();
             _speechBubble.ShowBubble(bubblePosition, article.Title, article.Description, article.ThumbnailUrl, _currentArticleIndex, _rssService.Articles.Count);
+        }
+
+        private Point GetBubblePosition()
+        {
+            // スピーチバブルをマスコットの左上に配置
+            // バブルの幅が420pxなので、左端から少し余裕を持って配置
+            var bubbleWidth = 420;
+            var offsetX = -bubbleWidth - 10;  // マスコットの左側に10px余裕
+            var offsetY = -50;  // マスコットの少し上に配置
+            
+            return new Point(Left + offsetX, Top + offsetY);
         }
 
         private void OnPreviousRequested(object sender, EventArgs e)
