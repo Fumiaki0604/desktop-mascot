@@ -400,7 +400,7 @@ namespace DesktopMascot
         private void InitializeComponent()
         {
             Width = 420;  // 横幅はそのまま
-            Height = 172;  // 指定された縦幅172px
+            Height = 280;  // 元のサイズに戻す
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -463,11 +463,12 @@ namespace DesktopMascot
             // サムネイル画像（横150px、縦270px）
             ThumbnailImage = new Image
             {
-                MaxWidth = 150,
-                MaxHeight = 270,
+                Width = 150,         // MaxWidth → Width（固定サイズ）
+                Height = 270,        // MaxHeight → Height（固定サイズ）
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Margin = new Thickness(0, 0, 0, 10),
-                Stretch = Stretch.Uniform
+                Stretch = Stretch.UniformToFill,  // 比率保持しつつ領域を埋める
+                Visibility = Visibility.Collapsed  // 初期状態は非表示
             };
 
             // ボタンパネル
