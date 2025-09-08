@@ -16,6 +16,7 @@ namespace DesktopMascot
         public string Title { get; set; } = "";
         public string Summary { get; set; } = "";
         public string Link { get; set; } = "";
+        public string ThumbnailUrl { get; set; } = "";
         public DateTime PublishDate { get; set; } = DateTime.MinValue;
     }
 
@@ -102,6 +103,15 @@ namespace DesktopMascot
 
         private void NextInternal()
         {
+            // キューが空の場合、履歴から記事を再キューに追加してループ
+            if (_queue.Count == 0 && _history.Count > 0)
+            {
+                foreach (var item in _history)
+                {
+                    _queue.Enqueue(item);
+                }
+            }
+            
             if (_queue.Count == 0) return;
 
             if (Current != null)
@@ -195,6 +205,10 @@ namespace DesktopMascot
                 if (DateTime.TryParse(pubDate, out var date))
                     item.PublishDate = date;
 
+                // enclosureタグからサムネイル画像URLを取得
+                item.ThumbnailUrl = GetThumbnailUrl(element);
+                
+
                 if (!string.IsNullOrEmpty(item.Title) && !string.IsNullOrEmpty(item.Link))
                 {
                     item.Summary = CleanSummary(item.Summary);
@@ -273,6 +287,59 @@ namespace DesktopMascot
         public void Resume()
         {
             _paused = false;
+        }
+
+        private string GetThumbnailUrl(XElement element)
+        {
+            try
+            {
+                
+                // enclosureタグから画像URLを取得
+                var enclosure = element.Element("enclosure");
+                if (enclosure != null)
+                {
+                    var type = enclosure.Attribute("type")?.Value ?? "";
+                    var url = enclosure.Attribute("url")?.Value ?? "";
+                    
+                    
+                    // 画像ファイルの場合のみ返す
+                    if (type.StartsWith("image/") && !string.IsNullOrEmpty(url))
+                    {
+                        return url;
+                    }
+                }
+                
+                // media:thumbnail (Media RSS) も確認
+                var ns = XNamespace.Get("http://search.yahoo.com/mrss/");
+                var mediaThumbnail = element.Element(ns + "thumbnail");
+                if (mediaThumbnail != null)
+                {
+                    var url = mediaThumbnail.Attribute("url")?.Value ?? "";
+                    if (!string.IsNullOrEmpty(url))
+                    {
+                        return url;
+                    }
+                }
+                
+                // media:content も確認
+                var mediaContent = element.Element(ns + "content");
+                if (mediaContent != null)
+                {
+                    var type = mediaContent.Attribute("type")?.Value ?? "";
+                    var url = mediaContent.Attribute("url")?.Value ?? "";
+                    
+                    if (type.StartsWith("image/") && !string.IsNullOrEmpty(url))
+                    {
+                        return url;
+                    }
+                }
+            }
+            catch
+            {
+                // サムネイルURL取得エラーは無視（空文字を返す）
+            }
+            
+            return "";
         }
 
         public void Dispose()

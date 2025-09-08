@@ -42,14 +42,14 @@ namespace DesktopMascot
 
     public class BubbleSettings
     {
-        public int Width { get; set; } = 320;
+        public int Width { get; set; } = 384; // 320 * 1.2 = 384
         public int Padding { get; set; } = 20;
         public int OffsetX { get; set; } = -340;
         public int OffsetY { get; set; } = -60;
         public int CornerRadius { get; set; } = 12;
         public float Opacity { get; set; } = 0.92f;
         public string FontName { get; set; } = "Meiryo UI";
-        public int FontSize { get; set; } = 12;
+        public int FontSize { get; set; } = 11; // 12 → 11に縮小
         public int LineClamp { get; set; } = 8;
         public bool ShowOpenHint { get; set; } = true;
         public bool ShowDescription { get; set; } = true;

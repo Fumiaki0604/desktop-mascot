@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
@@ -22,6 +25,8 @@ namespace DesktopMascot
         private bool _isDragging = false;
         private Point _dragStartPoint;
         private Rectangle _linkButtonRect = Rectangle.Empty;
+        private Dictionary<string, Image> _thumbnailCache = new Dictionary<string, Image>();
+        private HttpClient _httpClient = new HttpClient();
 
         [DllImport("user32.dll")]
         private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
@@ -32,10 +37,48 @@ namespace DesktopMascot
         [DllImport("user32.dll")]
         private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
 
+        [DllImport("user32.dll")]
+        private static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref Point pptDst, ref Size psize, IntPtr hdcSrc, ref Point pptSrc, uint crKey, ref BLENDFUNCTION pblend, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int nWidth, int nHeight);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr hObject);
+
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_LAYERED = 0x80000;
         private const int WS_EX_TRANSPARENT = 0x20;
         private const uint LWA_COLORKEY = 0x1;
+        private const uint LWA_ALPHA = 0x2;
+        private const uint ULW_ALPHA = 0x02;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BLENDFUNCTION
+        {
+            public byte BlendOp;
+            public byte BlendFlags;
+            public byte SourceConstantAlpha;
+            public byte AlphaFormat;
+        }
+
+        private const byte AC_SRC_OVER = 0x00;
+        private const byte AC_SRC_ALPHA = 0x01;
 
         public MainForm()
         {
@@ -51,14 +94,17 @@ namespace DesktopMascot
                 InitializeComponents();
                 Console.WriteLine("InitializeComponents completed");
                 
+                Console.WriteLine("LoadSettings開始...");
                 LoadSettings();
                 Console.WriteLine("LoadSettings completed");
+                
                 Console.WriteLine("=== MainForm Constructor End ===");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"ERROR in MainForm Constructor: {ex.Message}");
                 Console.WriteLine($"StackTrace: {ex.StackTrace}");
+                MessageBox.Show($"エラー: {ex.Message}", "MainForm Constructor Error");
             }
         }
 
@@ -143,9 +189,34 @@ namespace DesktopMascot
                 Settings.Load();
                 var pos = Settings.GetWindowPosition();
                 
-                Location = pos;
+                Console.WriteLine($"ウィンドウ位置設定: {pos}");
+                Console.WriteLine($"画面サイズ: {Screen.PrimaryScreen.Bounds}");
+                
+                // 画面内に収まるように位置を調整
+                var screenBounds = Screen.PrimaryScreen.Bounds;
+                var adjustedX = Math.Max(0, Math.Min(pos.X, screenBounds.Width - Width));
+                var adjustedY = Math.Max(0, Math.Min(pos.Y, screenBounds.Height - Height));
+                var safePos = new Point(adjustedX, adjustedY);
+                
+                // さらに安全のため、画面中央寄りに配置
+                if (safePos.X > screenBounds.Width - 200 || safePos.Y > screenBounds.Height - 200)
+                {
+                    safePos = new Point(200, 200);
+                    Console.WriteLine("位置を画面中央寄りに修正しました");
+                }
+                
+                Location = safePos;
+                Console.WriteLine($"調整後のウィンドウ位置: {Location}");
+                Console.WriteLine($"ウィンドウサイズ: {Size}");
+                Console.WriteLine($"表示状態: Visible={Visible}, WindowState={WindowState}");
                 
                 LoadMascotImage();
+                
+                // 強制的に表示
+                Show();
+                BringToFront();
+                TopMost = true;
+                Console.WriteLine($"Show()後の表示状態: Visible={Visible}");
                 
                 _rssTicker?.Start();
             }
@@ -193,10 +264,60 @@ namespace DesktopMascot
             {
                 var graphics = e.Graphics;
                 graphics.Clear(Color.Magenta);  // 透明化用のキーカラー
-                // アンチエイリアシングを無効化して透明化処理を正確に
-                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighSpeed;
-                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                
+                // 画像を右側に配置（150×150）
+                var imageSize = 150;
+                var imageX = ClientSize.Width - imageSize - 20; // 右から20pxの余白
+                var imageY = ClientSize.Height - imageSize - 20; // 下から20pxの余白
+                
+                if (_mascotImage != null)
+                {
+                    var destRect = new Rectangle(imageX, imageY, imageSize, imageSize);
+                    graphics.DrawImage(_mascotImage, destRect);
+                }
+                else
+                {
+                    using (var brush = new SolidBrush(Color.White))
+                    {
+                        graphics.FillEllipse(brush, imageX + 25, imageY + 25, 100, 100);
+                    }
+                    using (var font = new Font("Arial", 14))
+                    using (var brush = new SolidBrush(Color.Black))
+                    {
+                        graphics.DrawString("MASCOT", font, brush, imageX + 35, imageY + 70);
+                    }
+                }
+
+                // アンカーポイントを計算（画像の左辺中央）
+                _anchorPoint = new Point(imageX, imageY + imageSize / 2);
+
+                if (_bubbleVisible)
+                {
+                    DrawBubbleComicStyle(graphics);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Paint error: {ex.Message}");
+            }
+        }
+
+        private void UpdateLayeredWindowContent()
+        {
+            try
+            {
+                // 32bit ARGBビットマップを直接作成
+                using (var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    using (var graphics = Graphics.FromImage(bitmap))
+                    {
+                        // 完全に透明な背景から開始
+                        graphics.Clear(Color.Transparent);
+                        
+                        // 高品質な描画設定（アンチエイリアシング有効）
+                        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+                        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 
                 // 画像を右側に配置（150×150）
                 var imageSize = 150;
@@ -228,14 +349,74 @@ namespace DesktopMascot
                 // アンカーポイントを計算（画像の左辺中央）
                 _anchorPoint = new Point(imageX, imageY + imageSize / 2);
 
-                if (_bubbleVisible)
-                {
-                    DrawBubbleComicStyle(graphics);
+                        if (_bubbleVisible)
+                        {
+                            DrawBubbleComicStyle(graphics);
+                        }
+                    }
+
+                    // ビットマップをUpdateLayeredWindowで設定
+                    var screenDC = GetDC(IntPtr.Zero);
+                    var memoryDC = CreateCompatibleDC(screenDC);
+                    var hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+                    var oldBitmap = SelectObject(memoryDC, hBitmap);
+
+                    var blend = new BLENDFUNCTION();
+                    blend.BlendOp = AC_SRC_OVER;
+                    blend.BlendFlags = 0;
+                    blend.SourceConstantAlpha = 255;
+                    blend.AlphaFormat = AC_SRC_ALPHA;
+
+                    var windowPos = this.Location;
+                    var windowSize = new Size(ClientSize.Width, ClientSize.Height);
+                    var sourcePos = new Point(0, 0);
+
+                    UpdateLayeredWindow(Handle, screenDC, ref windowPos, ref windowSize, memoryDC, ref sourcePos, 0, ref blend, ULW_ALPHA);
+
+                    // リソース解放
+                    SelectObject(memoryDC, oldBitmap);
+                    DeleteObject(hBitmap);
+                    DeleteDC(memoryDC);
+                    ReleaseDC(IntPtr.Zero, screenDC);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Paint error: {ex.Message}");
+                Console.WriteLine($"UpdateLayeredWindow error: {ex.Message}");
+            }
+        }
+
+        private async Task<Image> GetThumbnailAsync(string thumbnailUrl)
+        {
+            if (string.IsNullOrEmpty(thumbnailUrl)) 
+                return null;
+            
+            try
+            {
+                if (_thumbnailCache.ContainsKey(thumbnailUrl))
+                    return _thumbnailCache[thumbnailUrl];
+
+                var bytes = await _httpClient.GetByteArrayAsync(thumbnailUrl);
+                
+                using (var stream = new MemoryStream(bytes))
+                {
+                    var image = Image.FromStream(stream);
+                    
+                    // キャッシュサイズを制限（最大50枚）
+                    if (_thumbnailCache.Count >= 50)
+                    {
+                        var firstKey = _thumbnailCache.Keys.First();
+                        _thumbnailCache[firstKey]?.Dispose();
+                        _thumbnailCache.Remove(firstKey);
+                    }
+                    
+                    _thumbnailCache[thumbnailUrl] = image;
+                    return image;
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -256,7 +437,17 @@ namespace DesktopMascot
 
             using (var font = new Font(settings.FontName, settings.FontSize))
             {
-                // テキストサイズを測定
+                // サムネイル画像の有無を確認
+                var currentItem = _rssTicker?.GetCurrentItem();
+                var hasThumbnail = !string.IsNullOrEmpty(currentItem?.ThumbnailUrl);
+                
+                // サムネイル画像をボタンと同じ幅（100px）に設定
+                var thumbnailWidth = hasThumbnail ? 100 : 0;
+                var thumbnailHeight = hasThumbnail ? 75 : 0; // アスペクト比を考慮
+                var thumbnailPadding = hasThumbnail ? 10 : 0;
+                
+                // テキストサイズを測定（サムネイル分を考慮）
+                var textAreaWidth = bubbleWidth - padding * 2 - thumbnailWidth - thumbnailPadding;
                 var stringFormat = new StringFormat
                 {
                     Alignment = StringAlignment.Near,
@@ -265,10 +456,14 @@ namespace DesktopMascot
                     FormatFlags = StringFormatFlags.LineLimit
                 };
                 
-                var measuredSize = graphics.MeasureString(text, font, bubbleWidth - padding * 2, stringFormat);
-                var lines = Math.Min(settings.LineClamp, (int)Math.Ceiling(measuredSize.Height / font.Height));
-                var textHeight = lines * font.Height;
-                var bubbleHeight = textHeight + padding * 2;
+                // 吹き出しの高さを固定（ボタン込みで十分な高さ）
+                var buttonHeight = 25;
+                var buttonMargin = 10;
+                var minBubbleHeight = 120;
+                var bubbleHeight = Math.Max(minBubbleHeight, thumbnailHeight + padding * 2 + buttonHeight + buttonMargin);
+                
+                // テキスト表示エリア（サムネイル右側、ボタン上まで）
+                var textHeight = bubbleHeight - padding * 2 - buttonHeight - buttonMargin;
 
                 // 吹き出しを左側に配置（アンカーポイントの左側）
                 var bubbleX = _anchorPoint.X - bubbleWidth - 30;
@@ -290,16 +485,39 @@ namespace DesktopMascot
                     DrawRoundedRectangle(graphics, _bubbleRect, cornerRadius, bgBrush, borderPen);
                 }
 
-                // テキストを描画（URL部分を除く）
-                var currentItem = _rssTicker?.GetCurrentItem();
+                // サムネイル画像を描画（ボタンと同じ幅）
+                if (hasThumbnail && _thumbnailCache.ContainsKey(currentItem.ThumbnailUrl))
+                {
+                    var thumbnail = _thumbnailCache[currentItem.ThumbnailUrl];
+                    if (thumbnail != null)
+                    {
+                        var thumbRect = new Rectangle(bubbleX + padding, bubbleY + padding, thumbnailWidth, thumbnailHeight);
+                        graphics.DrawImage(thumbnail, thumbRect);
+                    }
+                }
+                else if (hasThumbnail)
+                {
+                    // 非同期でサムネイルをロード
+                    Task.Run(async () =>
+                    {
+                        await GetThumbnailAsync(currentItem.ThumbnailUrl);
+                        if (InvokeRequired)
+                            Invoke(new Action(() => Invalidate()));
+                        else
+                            Invalidate();
+                    });
+                }
+                
+                // テキストを描画（吹き出し上下フル活用）
                 var displayText = currentItem?.Title ?? text;
                 if (!string.IsNullOrEmpty(currentItem?.Summary))
                 {
                     displayText += $"\n\n{currentItem.Summary}";
                 }
                 
-                _textRect = new Rectangle(bubbleX + padding, bubbleY + padding, 
-                                        bubbleWidth - padding * 2, textHeight - 40);
+                var textX = bubbleX + padding + thumbnailWidth + thumbnailPadding;
+                var textWidth = bubbleWidth - padding * 2 - thumbnailWidth - thumbnailPadding;
+                _textRect = new Rectangle(textX, bubbleY + padding, textWidth, textHeight);
                 using (var textBrush = new SolidBrush(Color.White))
                 {
                     graphics.DrawString(displayText, font, textBrush, _textRect, stringFormat);
@@ -626,6 +844,30 @@ namespace DesktopMascot
                     }
                 }
             }
+        }
+        
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // サムネイルキャッシュをクリア
+                foreach (var image in _thumbnailCache.Values)
+                {
+                    image?.Dispose();
+                }
+                _thumbnailCache.Clear();
+                
+                // HttpClientを解放
+                _httpClient?.Dispose();
+                
+                // その他のリソース
+                _rssTicker?.Dispose();
+                _renderTimer?.Dispose();
+                _mascotImage?.Dispose();
+                _notifyIcon?.Dispose();
+                _contextMenu?.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 }
