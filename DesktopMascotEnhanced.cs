@@ -558,14 +558,8 @@ namespace DesktopMascot
             Show();
             Activate();
 
-            // 8秒後に自動で閉じる
-            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
-            timer.Tick += (s, e) =>
-            {
-                timer.Stop();
-                Hide();
-            };
-            timer.Start();
+            // 常時表示（自動非表示タイマー無効化）
+            // ユーザーが×ボタンまたは他の記事をクリックするまで表示を維持
         }
     }
 
