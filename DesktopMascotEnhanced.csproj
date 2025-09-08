@@ -12,6 +12,13 @@
     <Copyright>© 2024 Desktop Mascot Enhanced</Copyright>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>portable</DebugType>
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
