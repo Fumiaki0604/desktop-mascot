@@ -460,15 +460,14 @@ namespace DesktopMascot
                 Margin = new Thickness(0, 0, 0, 10)
             };
 
-            // サムネイル画像（横150px、縦270px）
+            // サムネイル画像（元のサイズに戻す）
             ThumbnailImage = new Image
             {
-                Width = 150,         // MaxWidth → Width（固定サイズ）
-                Height = 270,        // MaxHeight → Height（固定サイズ）
+                MaxWidth = 120,
+                MaxHeight = 80,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Margin = new Thickness(0, 0, 0, 10),
-                Stretch = Stretch.UniformToFill,  // 比率保持しつつ領域を埋める
-                Visibility = Visibility.Collapsed  // 初期状態は非表示
+                Stretch = Stretch.Uniform
             };
 
             // ボタンパネル
@@ -589,8 +588,8 @@ namespace DesktopMascot
 
         private void InitializeComponent()
         {
-            Width = 100;
-            Height = 100;
+            Width = 150;   // マスコット画像に合わせて拡大
+            Height = 270;  // マスコット画像に合わせて拡大
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -602,8 +601,8 @@ namespace DesktopMascot
 
             MascotImage = new Image
             {
-                Width = 80,
-                Height = 80,
+                Width = 150,     // 80→150
+                Height = 270,    // 80→270
                 Cursor = Cursors.Hand
             };
 
@@ -634,8 +633,8 @@ namespace DesktopMascot
                     var bitmap = new BitmapImage();
                     bitmap.BeginInit();
                     bitmap.UriSource = new Uri(_settings.ImagePath);
-                    bitmap.DecodePixelWidth = 80;
-                    bitmap.DecodePixelHeight = 80;
+                    bitmap.DecodePixelWidth = 150;   // 80→150
+                    bitmap.DecodePixelHeight = 270;  // 80→270
                     bitmap.EndInit();
                     MascotImage.Source = bitmap;
                 }
