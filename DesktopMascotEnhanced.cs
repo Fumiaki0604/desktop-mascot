@@ -391,10 +391,28 @@ namespace DesktopMascot
     {
         public int CurrentArticleIndex { get; set; } = 0;
         public int TotalArticles { get; set; } = 0;
+        private DispatcherTimer _autoAdvanceTimer;
 
         public SpeechBubbleWindow()
         {
             InitializeComponent();
+            InitializeAutoAdvanceTimer();
+        }
+
+        private void InitializeAutoAdvanceTimer()
+        {
+            _autoAdvanceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+            _autoAdvanceTimer.Tick += (s, e) =>
+            {
+                _autoAdvanceTimer.Stop();
+                NextRequested?.Invoke(this, EventArgs.Empty);
+            };
+            
+            // ウィンドウ上でのマウス操作やキー操作でタイマーリセット
+            MouseMove += (s, e) => StartAutoAdvanceTimer();
+            MouseLeftButtonDown += (s, e) => StopAutoAdvanceTimer();
+            MouseRightButtonDown += (s, e) => StopAutoAdvanceTimer();
+            KeyDown += (s, e) => StartAutoAdvanceTimer();
         }
 
         private void InitializeComponent()
@@ -433,8 +451,14 @@ namespace DesktopMascot
             NextButton = new Button { Content = "▶", Width = 25, Height = 25, FontSize = 10, Margin = new Thickness(0, 0, 8, 0) };
             CounterLabel = new Label { Content = "1/1", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
 
-            PrevButton.Click += (s, e) => PreviousRequested?.Invoke(this, EventArgs.Empty);
-            NextButton.Click += (s, e) => NextRequested?.Invoke(this, EventArgs.Empty);
+            PrevButton.Click += (s, e) => {
+                StopAutoAdvanceTimer();
+                PreviousRequested?.Invoke(this, EventArgs.Empty);
+            };
+            NextButton.Click += (s, e) => {
+                StopAutoAdvanceTimer();
+                NextRequested?.Invoke(this, EventArgs.Empty);
+            };
 
             navPanel.Children.Add(PrevButton);
             navPanel.Children.Add(NextButton);
@@ -452,23 +476,31 @@ namespace DesktopMascot
             headerPanel.Children.Add(navPanel);
             headerPanel.Children.Add(TitleBlock);
 
-            // 内容
-            ContentBlock = new TextBlock
-            {
-                FontSize = 12,  // 10→12（+2）
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 10)
-            };
+            // 記事コンテンツエリア（サムネイル左、テキスト右）
+            var contentArea = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
 
-            // サムネイル画像（元のサイズに戻す）
+            // サムネイル画像（左側）
             ThumbnailImage = new Image
             {
                 MaxWidth = 120,
                 MaxHeight = 80,
                 HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(0, 0, 0, 10),
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 0, 10, 0),
                 Stretch = Stretch.Uniform
             };
+            DockPanel.SetDock(ThumbnailImage, Dock.Left);
+
+            // 記事内容（右側）
+            ContentBlock = new TextBlock
+            {
+                FontSize = 12,  // 10→12（+2）
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            contentArea.Children.Add(ThumbnailImage);
+            contentArea.Children.Add(ContentBlock);
 
             // ボタンパネル
             var buttonPanel = new StackPanel
@@ -492,15 +524,20 @@ namespace DesktopMascot
                 FontSize = 9
             };
 
-            openButton.Click += (s, e) => OnOpenArticle();
-            closeButton.Click += (s, e) => Hide();
+            openButton.Click += (s, e) => {
+                StopAutoAdvanceTimer();
+                OnOpenArticle();
+            };
+            closeButton.Click += (s, e) => {
+                StopAutoAdvanceTimer();
+                Hide();
+            };
 
             buttonPanel.Children.Add(openButton);
             buttonPanel.Children.Add(closeButton);
 
             stackPanel.Children.Add(headerPanel);
-            stackPanel.Children.Add(ContentBlock);
-            stackPanel.Children.Add(ThumbnailImage);
+            stackPanel.Children.Add(contentArea);
             stackPanel.Children.Add(buttonPanel);
 
             mainBorder.Child = stackPanel;
@@ -558,8 +595,22 @@ namespace DesktopMascot
             Show();
             Activate();
 
-            // 常時表示（自動非表示タイマー無効化）
-            // ユーザーが×ボタンまたは他の記事をクリックするまで表示を維持
+            // 15秒の自動送りタイマーを開始
+            StartAutoAdvanceTimer();
+        }
+
+        public void StartAutoAdvanceTimer()
+        {
+            _autoAdvanceTimer?.Stop();
+            if (TotalArticles > 1)
+            {
+                _autoAdvanceTimer?.Start();
+            }
+        }
+
+        public void StopAutoAdvanceTimer()
+        {
+            _autoAdvanceTimer?.Stop();
         }
     }
 
@@ -768,6 +819,7 @@ namespace DesktopMascot
 
         private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
+            _speechBubble?.StopAutoAdvanceTimer();
             ShowSpeechBubble();
             AnimateMascot();
         }
@@ -860,8 +912,8 @@ namespace DesktopMascot
             // スピーチバブルをマスコットの左上に配置
             // バブルの幅が420pxなので、左端から少し余裕を持って配置
             var bubbleWidth = 420;
-            var offsetX = -bubbleWidth - 10;  // マスコットの左側に10px余裕
-            var offsetY = -50;  // マスコットの少し上に配置
+            var offsetX = -bubbleWidth + 10;  // 右に20px移動（-10から+10へ）
+            var offsetY = -20;  // さらに10px下に移動（-30から-20へ）
             
             return new Point(Left + offsetX, Top + offsetY);
         }
