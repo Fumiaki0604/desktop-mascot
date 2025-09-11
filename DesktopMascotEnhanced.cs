@@ -53,6 +53,18 @@ namespace DesktopMascot
     }
 
     /// <summary>
+    /// 天気情報データ
+    /// </summary>
+    public class WeatherData
+    {
+        public string WeatherCode { get; set; } = "";
+        public string WeatherText { get; set; } = "";
+        public int? MaxTemp { get; set; }
+        public int? MinTemp { get; set; }
+        public DateTime LastUpdate { get; set; }
+    }
+
+    /// <summary>
     /// マスコット設定クラス
     /// </summary>
     public class MascotSettings
@@ -226,6 +238,228 @@ namespace DesktopMascot
             }
             
             return "";
+        }
+    }
+
+    /// <summary>
+    /// 天気情報サービスクラス（気象庁API使用）
+    /// </summary>
+    public class WeatherService
+    {
+        private readonly HttpClient _httpClient;
+        private const string JMA_API_URL = "https://www.jma.go.jp/bosai/forecast/data/forecast/130000.json";
+        private const string OPEN_METEO_API_URL = "https://api.open-meteo.com/v1/forecast?latitude=35.6785&longitude=139.6823&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia/Tokyo&forecast_days=1";
+
+        public WeatherData CurrentWeather { get; private set; } = new WeatherData();
+
+        public WeatherService()
+        {
+            var handler = new HttpClientHandler()
+            {
+                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+            };
+            
+            _httpClient = new HttpClient(handler);
+            _httpClient.Timeout = TimeSpan.FromSeconds(30);
+            _httpClient.DefaultRequestHeaders.Add("User-Agent", "DesktopMascot/1.0");
+        }
+
+        public async Task<bool> FetchWeatherAsync()
+        {
+            // まず気象庁APIを試す
+            if (await FetchJmaWeatherAsync())
+            {
+                return true;
+            }
+            
+            // 気象庁APIが失敗した場合、Open-MeteoAPIを試す
+            System.Diagnostics.Debug.WriteLine("気象庁API失敗、Open-Meteo APIを試行中...");
+            return await FetchOpenMeteoWeatherAsync();
+        }
+
+        private async Task<bool> FetchJmaWeatherAsync()
+        {
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("気象庁API: 天気情報取得開始...");
+                var response = await _httpClient.GetStringAsync(JMA_API_URL);
+                System.Diagnostics.Debug.WriteLine($"気象庁API: 応答受信 {response.Length} 文字");
+                
+                var weatherJson = System.Text.Json.JsonDocument.Parse(response);
+                
+                // 最初の予報データを取得
+                var forecasts = weatherJson.RootElement.GetProperty("timeSeries");
+                System.Diagnostics.Debug.WriteLine($"時系列データ数: {forecasts.GetArrayLength()}");
+                
+                if (forecasts.GetArrayLength() > 0)
+                {
+                    var firstForecast = forecasts[0];
+                    var areas = firstForecast.GetProperty("areas");
+                    System.Diagnostics.Debug.WriteLine($"地域データ数: {areas.GetArrayLength()}");
+                    
+                    // 東京地方の天気を取得
+                    foreach (var area in areas.EnumerateArray())
+                    {
+                        var areaName = area.GetProperty("area").GetProperty("name").GetString();
+                        System.Diagnostics.Debug.WriteLine($"地域名: {areaName}");
+                        
+                        if (areaName == "東京地方")
+                        {
+                            var weathers = area.GetProperty("weathers");
+                            if (weathers.GetArrayLength() > 0)
+                            {
+                                CurrentWeather.WeatherText = weathers[0].GetString() ?? "";
+                                CurrentWeather.WeatherCode = GetWeatherCode(CurrentWeather.WeatherText);
+                                System.Diagnostics.Debug.WriteLine($"天気: {CurrentWeather.WeatherText}, アイコン: {CurrentWeather.WeatherCode}");
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // 気温データの取得
+                if (forecasts.GetArrayLength() > 1)
+                {
+                    var tempForecast = forecasts[1];
+                    var tempAreas = tempForecast.GetProperty("areas");
+                    
+                    foreach (var area in tempAreas.EnumerateArray())
+                    {
+                        var areaName = area.GetProperty("area").GetProperty("name").GetString();
+                        System.Diagnostics.Debug.WriteLine($"気温地域名: {areaName}");
+                        
+                        if (areaName == "東京")
+                        {
+                            if (area.TryGetProperty("tempsMax", out var maxTemps) && maxTemps.GetArrayLength() > 0)
+                            {
+                                var maxTempStr = maxTemps[0].GetString();
+                                System.Diagnostics.Debug.WriteLine($"最高気温文字列: {maxTempStr}");
+                                if (!string.IsNullOrEmpty(maxTempStr) && int.TryParse(maxTempStr, out int maxTemp))
+                                {
+                                    CurrentWeather.MaxTemp = maxTemp;
+                                }
+                            }
+                            
+                            if (area.TryGetProperty("tempsMin", out var minTemps) && minTemps.GetArrayLength() > 0)
+                            {
+                                var minTempStr = minTemps[0].GetString();
+                                System.Diagnostics.Debug.WriteLine($"最低気温文字列: {minTempStr}");
+                                if (!string.IsNullOrEmpty(minTempStr) && int.TryParse(minTempStr, out int minTemp))
+                                {
+                                    CurrentWeather.MinTemp = minTemp;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"気象庁API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
+                CurrentWeather.LastUpdate = DateTime.Now;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"気象庁API取得エラー: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<bool> FetchOpenMeteoWeatherAsync()
+        {
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("Open-Meteo API: 天気情報取得開始...");
+                var response = await _httpClient.GetStringAsync(OPEN_METEO_API_URL);
+                System.Diagnostics.Debug.WriteLine($"Open-Meteo API: 応答受信 {response.Length} 文字");
+                
+                var weatherJson = System.Text.Json.JsonDocument.Parse(response);
+                var daily = weatherJson.RootElement.GetProperty("daily");
+                
+                // 天気コード
+                if (daily.TryGetProperty("weather_code", out var weatherCodes) && weatherCodes.GetArrayLength() > 0)
+                {
+                    var code = weatherCodes[0].GetInt32();
+                    CurrentWeather.WeatherCode = GetWeatherCodeFromWMO(code);
+                    CurrentWeather.WeatherText = GetWeatherTextFromWMO(code);
+                }
+                
+                // 最高気温
+                if (daily.TryGetProperty("temperature_2m_max", out var maxTemps) && maxTemps.GetArrayLength() > 0)
+                {
+                    CurrentWeather.MaxTemp = (int)Math.Round(maxTemps[0].GetDouble());
+                }
+                
+                // 最低気温
+                if (daily.TryGetProperty("temperature_2m_min", out var minTemps) && minTemps.GetArrayLength() > 0)
+                {
+                    CurrentWeather.MinTemp = (int)Math.Round(minTemps[0].GetDouble());
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"Open-Meteo API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
+                CurrentWeather.LastUpdate = DateTime.Now;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Open-Meteo API取得エラー: {ex.Message}");
+                return false;
+            }
+        }
+
+        private string GetWeatherCode(string weatherText)
+        {
+            // 天気テキストから簡易的な天気コードを生成
+            if (weatherText.Contains("晴")) return "☀️";
+            if (weatherText.Contains("曇")) return "☁️";
+            if (weatherText.Contains("雨")) return "🌧️";
+            if (weatherText.Contains("雪")) return "❄️";
+            if (weatherText.Contains("雷")) return "⚡";
+            return "🌤️"; // デフォルト
+        }
+
+        private string GetWeatherCodeFromWMO(int wmoCode)
+        {
+            // WMO天気コードから絵文字に変換
+            return wmoCode switch
+            {
+                0 => "☀️", // Clear sky
+                1 or 2 or 3 => "🌤️", // Mainly clear, partly cloudy, overcast
+                45 or 48 => "🌫️", // Fog
+                51 or 53 or 55 => "🌦️", // Drizzle
+                56 or 57 => "🌧️", // Freezing drizzle
+                61 or 63 or 65 => "🌧️", // Rain
+                66 or 67 => "🌧️", // Freezing rain
+                71 or 73 or 75 => "❄️", // Snow
+                77 => "❄️", // Snow grains
+                80 or 81 or 82 => "🌦️", // Rain showers
+                85 or 86 => "❄️", // Snow showers
+                95 or 96 or 99 => "⛈️", // Thunderstorm
+                _ => "🌤️"
+            };
+        }
+
+        private string GetWeatherTextFromWMO(int wmoCode)
+        {
+            // WMO天気コードから日本語テキストに変換
+            return wmoCode switch
+            {
+                0 => "快晴",
+                1 => "晴れ",
+                2 => "薄曇り",
+                3 => "曇り",
+                45 or 48 => "霧",
+                51 or 53 or 55 => "霧雨",
+                56 or 57 => "着氷性霧雨",
+                61 or 63 or 65 => "雨",
+                66 or 67 => "着氷性の雨",
+                71 or 73 or 75 => "雪",
+                77 => "雪あられ",
+                80 or 81 or 82 => "にわか雨",
+                85 or 86 => "にわか雪",
+                95 or 96 or 99 => "雷雨",
+                _ => "不明"
+            };
         }
     }
 
@@ -620,10 +854,12 @@ namespace DesktopMascot
     public partial class MascotWindow : Window
     {
         private RssService _rssService;
+        private WeatherService _weatherService;
         private int _currentArticleIndex = 0;
         private SpeechBubbleWindow _speechBubble;
         private DispatcherTimer _idleTimer;
         private DispatcherTimer _rssTimer;
+        private DispatcherTimer _weatherTimer;
         private bool _isClickThrough = false;
         private MascotSettings _settings;
 
@@ -635,12 +871,13 @@ namespace DesktopMascot
             LoadMascotImage();
             StartIdleAnimation();
             StartRssAutoUpdate();
+            StartWeatherAutoUpdate();
         }
 
         private void InitializeComponent()
         {
             Width = 150;   // マスコット画像に合わせて拡大
-            Height = 270;  // マスコット画像に合わせて拡大
+            Height = 300;  // 天気表示分を考慮して30px拡張
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -650,14 +887,100 @@ namespace DesktopMascot
             Left = _settings.WindowLeft;
             Top = _settings.WindowTop;
 
+            // メインコンテナ（Grid）
+            var mainGrid = new Grid();
+
             MascotImage = new Image
             {
                 Width = 150,     // 80→150
                 Height = 270,    // 80→270
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 30, 0, 0) // 天気表示のスペースを空けるため下に移動
             };
 
-            Content = MascotImage;
+            // 天気情報全体のコンテナ
+            var weatherContainer = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 15, 0, 0) // 上端から15pxの余裕を確保（10px下げる）
+            };
+
+            // 「今日の天気」ラベル
+            var weatherLabel = new TextBlock
+            {
+                Text = "今日の天気",
+                FontSize = 10, // 8→10（2段階アップ）
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Background = Brushes.Transparent, // 背景透過
+                Margin = new Thickness(0, 0, 0, 2),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 2,
+                    ShadowDepth = 1,
+                    Opacity = 0.8
+                }
+            };
+
+            // 天気情報表示パネル
+            var weatherBorder = new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Background = Brushes.Transparent, // 背景透過
+                Padding = new Thickness(8, 4, 8, 4),
+                CornerRadius = new CornerRadius(4)
+            };
+
+            var weatherPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal
+            };
+
+            // 天気アイコン
+            WeatherIcon = new TextBlock
+            {
+                FontSize = 16,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 2,
+                    ShadowDepth = 1,
+                    Opacity = 0.8
+                }
+            };
+
+            // 気温表示
+            TemperatureText = new TextBlock
+            {
+                FontSize = 10,
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Margin = new Thickness(5, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 2,
+                    ShadowDepth = 1,
+                    Opacity = 0.8
+                }
+            };
+
+            weatherPanel.Children.Add(WeatherIcon);
+            weatherPanel.Children.Add(TemperatureText);
+            weatherBorder.Child = weatherPanel;
+
+            weatherContainer.Children.Add(weatherLabel);
+            weatherContainer.Children.Add(weatherBorder);
+
+            mainGrid.Children.Add(MascotImage);
+            mainGrid.Children.Add(weatherContainer);
+
+            Content = mainGrid;
 
             // イベントハンドラ
             MouseLeftButtonDown += OnMouseLeftButtonDown;
@@ -674,6 +997,8 @@ namespace DesktopMascot
         }
 
         public Image MascotImage { get; private set; }
+        public TextBlock WeatherIcon { get; private set; }
+        public TextBlock TemperatureText { get; private set; }
 
         private void LoadMascotImage()
         {
@@ -725,6 +1050,7 @@ namespace DesktopMascot
         private void InitializeServices()
         {
             _rssService = new RssService(_settings.RssUrl);
+            _weatherService = new WeatherService();
             _speechBubble = new SpeechBubbleWindow();
             _speechBubble.OpenArticleRequested += OnOpenArticleRequested;
             _speechBubble.PreviousRequested += OnPreviousRequested;
@@ -732,6 +1058,22 @@ namespace DesktopMascot
 
             // 初期RSS取得
             _ = UpdateRssAsync();
+            
+            // 初期天気取得
+            _ = Task.Run(async () =>
+            {
+                bool success = await _weatherService.FetchWeatherAsync();
+                if (!success)
+                {
+                    // API取得失敗時はエラー表示
+                    System.Diagnostics.Debug.WriteLine("API取得失敗、エラー表示を使用");
+                    _weatherService.CurrentWeather.WeatherCode = "❌";
+                    _weatherService.CurrentWeather.WeatherText = "取得失敗";
+                    _weatherService.CurrentWeather.MaxTemp = null;
+                    _weatherService.CurrentWeather.MinTemp = null;
+                }
+                Dispatcher.Invoke(() => UpdateWeatherDisplay());
+            });
         }
 
         private void OnLocationChanged(object sender, EventArgs e)
@@ -807,6 +1149,13 @@ namespace DesktopMascot
             _rssTimer.Start();
         }
 
+        private void StartWeatherAutoUpdate()
+        {
+            _weatherTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
+            _weatherTimer.Tick += async (s, e) => await UpdateWeatherAsync();
+            _weatherTimer.Start();
+        }
+
         private async Task UpdateRssAsync()
         {
             var success = await _rssService.FetchRssAsync();
@@ -815,6 +1164,51 @@ namespace DesktopMascot
                 _currentArticleIndex = 0;
                 AnimateMascot();
             }
+        }
+
+        private async Task UpdateWeatherAsync()
+        {
+            var success = await _weatherService.FetchWeatherAsync();
+            if (success)
+            {
+                UpdateWeatherDisplay();
+            }
+        }
+
+        private void UpdateWeatherDisplay()
+        {
+            var weather = _weatherService.CurrentWeather;
+            System.Diagnostics.Debug.WriteLine($"UpdateWeatherDisplay呼び出し - 天気: {weather.WeatherText}, アイコン: {weather.WeatherCode}");
+            
+            // 天気アイコンを更新
+            WeatherIcon.Text = weather.WeatherCode;
+            System.Diagnostics.Debug.WriteLine($"WeatherIcon.Text設定: {WeatherIcon.Text}");
+            
+            // 気温テキストを更新
+            var tempText = "";
+            if (weather.WeatherText == "取得失敗")
+            {
+                tempText = "取得失敗";
+            }
+            else if (weather.MaxTemp.HasValue && weather.MinTemp.HasValue)
+            {
+                tempText = $"{weather.MaxTemp}°/{weather.MinTemp}°";
+            }
+            else if (weather.MaxTemp.HasValue)
+            {
+                tempText = $"{weather.MaxTemp}°";
+            }
+            else if (weather.MinTemp.HasValue)
+            {
+                tempText = $"{weather.MinTemp}°";
+            }
+            else
+            {
+                tempText = "--°";
+            }
+            
+            TemperatureText.Text = tempText;
+            System.Diagnostics.Debug.WriteLine($"TemperatureText.Text設定: {TemperatureText.Text}");
         }
 
         private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -913,7 +1307,7 @@ namespace DesktopMascot
             // バブルの幅が420pxなので、左端から少し余裕を持って配置
             var bubbleWidth = 420;
             var offsetX = -bubbleWidth + 10;  // 右に20px移動（-10から+10へ）
-            var offsetY = -20;  // さらに10px下に移動（-30から-20へ）
+            var offsetY = 10;  // さらに10px下に移動（0から10へ）
             
             return new Point(Left + offsetX, Top + offsetY);
         }
