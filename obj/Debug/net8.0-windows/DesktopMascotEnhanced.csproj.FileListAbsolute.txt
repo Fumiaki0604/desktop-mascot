@@ -1,0 +1,15 @@
+C:\DesktopMascot_Enhanced\bin\Debug\net8.0-windows\DesktopMascotEnhanced.exe
+C:\DesktopMascot_Enhanced\bin\Debug\net8.0-windows\DesktopMascotEnhanced.deps.json
+C:\DesktopMascot_Enhanced\bin\Debug\net8.0-windows\DesktopMascotEnhanced.runtimeconfig.json
+C:\DesktopMascot_Enhanced\bin\Debug\net8.0-windows\DesktopMascotEnhanced.dll
+C:\DesktopMascot_Enhanced\bin\Debug\net8.0-windows\DesktopMascotEnhanced.pdb
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.GeneratedMSBuildEditorConfig.editorconfig
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.AssemblyInfoInputs.cache
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.AssemblyInfo.cs
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.csproj.CoreCompileInputs.cache
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.dll
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\refint\DesktopMascotEnhanced.dll
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.pdb
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.genruntimeconfig.cache
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\ref\DesktopMascotEnhanced.dll
+C:\DesktopMascot_Enhanced\obj\Debug\net8.0-windows\DesktopMascotEnhanced.sourcelink.json

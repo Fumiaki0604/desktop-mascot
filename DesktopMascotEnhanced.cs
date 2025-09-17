@@ -50,6 +50,19 @@ namespace DesktopMascot
         public string Link { get; set; } = "";
         public string PubDate { get; set; } = "";
         public string ThumbnailUrl { get; set; } = "";
+        public string SourceName { get; set; } = "";  // "Gizmodo", "ITmedia"など
+        public string SourceUrl { get; set; } = "";   // Feed URL
+        public DateTime PublishedDate { get; set; }   // 日付ソート用
+    }
+
+    /// <summary>
+    /// RSS Feed設定データ
+    /// </summary>
+    public class RssFeedConfig
+    {
+        public string Name { get; set; } = "";
+        public string Url { get; set; } = "";
+        public bool IsEnabled { get; set; } = true;
     }
 
     /// <summary>
@@ -64,15 +77,24 @@ namespace DesktopMascot
         public DateTime LastUpdate { get; set; }
     }
 
+
+
     /// <summary>
     /// マスコット設定クラス
     /// </summary>
     public class MascotSettings
     {
         public string ImagePath { get; set; } = "";
-        public string RssUrl { get; set; } = "https://www.gizmodo.jp/index.xml";
+        public string RssUrl { get; set; } = "https://www.gizmodo.jp/index.xml"; // 後方互換性のため残す
+        public List<RssFeedConfig> RssFeeds { get; set; } = new();
         public double WindowLeft { get; set; } = 100;
         public double WindowTop { get; set; } = 100;
+        
+        // 音声合成設定
+        public bool EnableVoiceSynthesis { get; set; } = false;
+        public string VoiceVoxApiKey { get; set; } = "";
+        public int VoiceSpeakerId { get; set; } = 61; // デフォルトは話者ID61
+        public bool AutoReadArticles { get; set; } = false; // 記事切り替え時の自動読み上げ
 
         private static string SettingsPath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -94,7 +116,7 @@ namespace DesktopMascot
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"設定保存エラー: {ex.Message}");
+                Console.WriteLine($"設定保存エラー: {ex.Message}");
             }
         }
 
@@ -105,14 +127,32 @@ namespace DesktopMascot
                 if (File.Exists(SettingsPath))
                 {
                     var json = File.ReadAllText(SettingsPath);
-                    return System.Text.Json.JsonSerializer.Deserialize<MascotSettings>(json) ?? new MascotSettings();
+                    var settings = System.Text.Json.JsonSerializer.Deserialize<MascotSettings>(json) ?? new MascotSettings();
+                    settings.InitializeDefaultFeeds();
+                    return settings;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"設定読込エラー: {ex.Message}");
+                Console.WriteLine($"設定読込エラー: {ex.Message}");
             }
-            return new MascotSettings();
+            var newSettings = new MascotSettings();
+            newSettings.InitializeDefaultFeeds();
+            return newSettings;
+        }
+
+        private void InitializeDefaultFeeds()
+        {
+            // 初回起動時またはRssFeedsが空の場合、デフォルトFeedを設定
+            if (!RssFeeds.Any())
+            {
+                RssFeeds.AddRange(new List<RssFeedConfig>
+                {
+                    new RssFeedConfig { Name = "Gizmodo", Url = "https://www.gizmodo.jp/index.xml", IsEnabled = true },
+                    new RssFeedConfig { Name = "ITmedia", Url = "https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml", IsEnabled = true },
+                    new RssFeedConfig { Name = "GIGAZINE", Url = "https://gigazine.net/news/rss_2.0/", IsEnabled = true }
+                });
+            }
         }
     }
 
@@ -122,52 +162,70 @@ namespace DesktopMascot
     public class RssService
     {
         private readonly HttpClient _httpClient;
-        private string _rssUrl;
+        private List<RssFeedConfig> _rssFeeds;
 
         public List<RssArticle> Articles { get; private set; } = new List<RssArticle>();
         public DateTime LastUpdate { get; private set; }
-        public string CurrentRssUrl => _rssUrl;
 
-        public RssService(string rssUrl)
+        public RssService(List<RssFeedConfig> rssFeeds)
         {
-            _rssUrl = rssUrl;
+            _rssFeeds = rssFeeds;
             _httpClient = new HttpClient();
             _httpClient.Timeout = TimeSpan.FromSeconds(10);
         }
 
-        public void SetRssUrl(string newUrl)
+        public void UpdateFeedList(List<RssFeedConfig> newFeeds)
         {
-            _rssUrl = newUrl;
+            _rssFeeds = newFeeds;
         }
 
         public async Task<bool> FetchRssAsync()
         {
-            try
-            {
-                var response = await _httpClient.GetStringAsync(_rssUrl);
-                var doc = XDocument.Parse(response);
+            var allArticles = new List<RssArticle>();
+            bool anySuccess = false;
 
-                var articles = doc.Descendants("item")
-                    .Take(10)
-                    .Select(item => new RssArticle
-                    {
-                        Title = CleanText(item.Element("title")?.Value ?? ""),
-                        Description = CleanHtml(item.Element("description")?.Value ?? ""),
-                        Link = item.Element("link")?.Value ?? "",
-                        PubDate = item.Element("pubDate")?.Value ?? "",
-                        ThumbnailUrl = GetThumbnailUrl(item)
-                    })
-                    .ToList();
-
-                Articles = articles;
-                LastUpdate = DateTime.Now;
-                return true;
-            }
-            catch (Exception ex)
+            foreach (var feed in _rssFeeds.Where(f => f.IsEnabled))
             {
-                System.Diagnostics.Debug.WriteLine($"RSS取得エラー: {ex.Message}");
-                return false;
+                try
+                {
+                    Console.WriteLine($"RSS取得開始: {feed.Name} ({feed.Url})");
+                    var response = await _httpClient.GetStringAsync(feed.Url);
+                    var doc = XDocument.Parse(response);
+
+                    var articles = doc.Descendants("item")
+                        .Take(10) // 各Feedから10記事まで
+                        .Select(item => new RssArticle
+                        {
+                            Title = CleanText(item.Element("title")?.Value ?? ""),
+                            Description = CleanHtml(item.Element("description")?.Value ?? ""),
+                            Link = item.Element("link")?.Value ?? "",
+                            PubDate = item.Element("pubDate")?.Value ?? "",
+                            ThumbnailUrl = GetThumbnailUrl(item),
+                            SourceName = feed.Name,
+                            SourceUrl = feed.Url,
+                            PublishedDate = ParsePubDate(item.Element("pubDate")?.Value ?? "")
+                        })
+                        .ToList();
+
+                    allArticles.AddRange(articles);
+                    anySuccess = true;
+                    Console.WriteLine($"RSS取得成功: {feed.Name} - {articles.Count}記事");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"RSS取得エラー ({feed.Name}): {ex.Message}");
+                }
             }
+
+            // 重複除去とソート
+            Articles = RemoveDuplicates(allArticles)
+                .OrderByDescending(a => a.PublishedDate)
+                .Take(20) // 最終的に20記事まで
+                .ToList();
+
+            LastUpdate = DateTime.Now;
+            Console.WriteLine($"全Feed処理完了: {Articles.Count}記事（重複除去済み）");
+            return anySuccess;
         }
 
         private string CleanHtml(string html)
@@ -180,6 +238,11 @@ namespace DesktopMascot
                                  .Replace("&amp;", "&")
                                  .Replace("&quot;", "\"")
                                  .Replace("&#39;", "'");
+
+            // 画像関連のテキストを除去
+            cleanText = Regex.Replace(cleanText, @"\b(?:photo|image|画像|写真)\b[^。]*[。.]", "", RegexOptions.IgnoreCase);
+            cleanText = Regex.Replace(cleanText, @"[^。]*\b(?:photo|image|画像|写真)\b", "", RegexOptions.IgnoreCase);
+
             cleanText = Regex.Replace(cleanText, @"\s+", " ");
             return cleanText.Trim();
         }
@@ -239,6 +302,98 @@ namespace DesktopMascot
             
             return "";
         }
+
+        private DateTime ParsePubDate(string pubDateStr)
+        {
+            if (string.IsNullOrEmpty(pubDateStr))
+                return DateTime.MinValue;
+
+            try
+            {
+                // RFC822形式の日付をパース
+                if (DateTime.TryParse(pubDateStr, out DateTime parsedDate))
+                {
+                    return parsedDate;
+                }
+            }
+            catch
+            {
+                Console.WriteLine($"日付パースエラー: {pubDateStr}");
+            }
+
+            return DateTime.MinValue;
+        }
+
+        private List<RssArticle> RemoveDuplicates(List<RssArticle> articles)
+        {
+            var uniqueArticles = new List<RssArticle>();
+            var seenTitles = new HashSet<string>();
+
+            foreach (var article in articles)
+            {
+                // タイトルの類似度で重複判定
+                var normalizedTitle = NormalizeTitle(article.Title);
+                
+                bool isDuplicate = false;
+                foreach (var seenTitle in seenTitles)
+                {
+                    if (CalculateSimilarity(normalizedTitle, seenTitle) > 0.8) // 80%以上の類似度で重複とみなす
+                    {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+
+                if (!isDuplicate)
+                {
+                    seenTitles.Add(normalizedTitle);
+                    uniqueArticles.Add(article);
+                }
+            }
+
+            Console.WriteLine($"重複除去: {articles.Count} → {uniqueArticles.Count}記事");
+            return uniqueArticles;
+        }
+
+        private string NormalizeTitle(string title)
+        {
+            // タイトルを正規化（小文字化、特殊文字除去、スペース正規化）
+            return Regex.Replace(title.ToLower(), @"[^\w\s]", "").Trim();
+        }
+
+        private double CalculateSimilarity(string str1, string str2)
+        {
+            if (string.IsNullOrEmpty(str1) || string.IsNullOrEmpty(str2))
+                return 0;
+
+            // 簡単なレーベンシュタイン距離ベースの類似度計算
+            var distance = LevenshteinDistance(str1, str2);
+            var maxLength = Math.Max(str1.Length, str2.Length);
+            return 1.0 - (double)distance / maxLength;
+        }
+
+        private int LevenshteinDistance(string str1, string str2)
+        {
+            var matrix = new int[str1.Length + 1, str2.Length + 1];
+
+            for (int i = 0; i <= str1.Length; i++)
+                matrix[i, 0] = i;
+            for (int j = 0; j <= str2.Length; j++)
+                matrix[0, j] = j;
+
+            for (int i = 1; i <= str1.Length; i++)
+            {
+                for (int j = 1; j <= str2.Length; j++)
+                {
+                    var cost = str1[i - 1] == str2[j - 1] ? 0 : 1;
+                    matrix[i, j] = Math.Min(
+                        Math.Min(matrix[i - 1, j] + 1, matrix[i, j - 1] + 1),
+                        matrix[i - 1, j - 1] + cost);
+                }
+            }
+
+            return matrix[str1.Length, str2.Length];
+        }
     }
 
     /// <summary>
@@ -266,14 +421,7 @@ namespace DesktopMascot
 
         public async Task<bool> FetchWeatherAsync()
         {
-            // まず気象庁APIを試す
-            if (await FetchJmaWeatherAsync())
-            {
-                return true;
-            }
-            
-            // 気象庁APIが失敗した場合、Open-MeteoAPIを試す
-            System.Diagnostics.Debug.WriteLine("気象庁API失敗、Open-Meteo APIを試行中...");
+            // Open-MeteoAPIのみを使用（気象庁APIは無効化）
             return await FetchOpenMeteoWeatherAsync();
         }
 
@@ -281,27 +429,27 @@ namespace DesktopMascot
         {
             try
             {
-                System.Diagnostics.Debug.WriteLine("気象庁API: 天気情報取得開始...");
+                Console.WriteLine("気象庁API: 天気情報取得開始...");
                 var response = await _httpClient.GetStringAsync(JMA_API_URL);
-                System.Diagnostics.Debug.WriteLine($"気象庁API: 応答受信 {response.Length} 文字");
+                Console.WriteLine($"気象庁API: 応答受信 {response.Length} 文字");
                 
                 var weatherJson = System.Text.Json.JsonDocument.Parse(response);
                 
                 // 最初の予報データを取得
                 var forecasts = weatherJson.RootElement.GetProperty("timeSeries");
-                System.Diagnostics.Debug.WriteLine($"時系列データ数: {forecasts.GetArrayLength()}");
+                Console.WriteLine($"時系列データ数: {forecasts.GetArrayLength()}");
                 
                 if (forecasts.GetArrayLength() > 0)
                 {
                     var firstForecast = forecasts[0];
                     var areas = firstForecast.GetProperty("areas");
-                    System.Diagnostics.Debug.WriteLine($"地域データ数: {areas.GetArrayLength()}");
+                    Console.WriteLine($"地域データ数: {areas.GetArrayLength()}");
                     
                     // 東京地方の天気を取得
                     foreach (var area in areas.EnumerateArray())
                     {
                         var areaName = area.GetProperty("area").GetProperty("name").GetString();
-                        System.Diagnostics.Debug.WriteLine($"地域名: {areaName}");
+                        Console.WriteLine($"地域名: {areaName}");
                         
                         if (areaName == "東京地方")
                         {
@@ -310,7 +458,7 @@ namespace DesktopMascot
                             {
                                 CurrentWeather.WeatherText = weathers[0].GetString() ?? "";
                                 CurrentWeather.WeatherCode = GetWeatherCode(CurrentWeather.WeatherText);
-                                System.Diagnostics.Debug.WriteLine($"天気: {CurrentWeather.WeatherText}, アイコン: {CurrentWeather.WeatherCode}");
+                                Console.WriteLine($"天気: {CurrentWeather.WeatherText}, アイコン: {CurrentWeather.WeatherCode}");
                             }
                             break;
                         }
@@ -326,14 +474,14 @@ namespace DesktopMascot
                     foreach (var area in tempAreas.EnumerateArray())
                     {
                         var areaName = area.GetProperty("area").GetProperty("name").GetString();
-                        System.Diagnostics.Debug.WriteLine($"気温地域名: {areaName}");
+                        Console.WriteLine($"気温地域名: {areaName}");
                         
                         if (areaName == "東京")
                         {
                             if (area.TryGetProperty("tempsMax", out var maxTemps) && maxTemps.GetArrayLength() > 0)
                             {
                                 var maxTempStr = maxTemps[0].GetString();
-                                System.Diagnostics.Debug.WriteLine($"最高気温文字列: {maxTempStr}");
+                                Console.WriteLine($"最高気温文字列: {maxTempStr}");
                                 if (!string.IsNullOrEmpty(maxTempStr) && int.TryParse(maxTempStr, out int maxTemp))
                                 {
                                     CurrentWeather.MaxTemp = maxTemp;
@@ -343,7 +491,7 @@ namespace DesktopMascot
                             if (area.TryGetProperty("tempsMin", out var minTemps) && minTemps.GetArrayLength() > 0)
                             {
                                 var minTempStr = minTemps[0].GetString();
-                                System.Diagnostics.Debug.WriteLine($"最低気温文字列: {minTempStr}");
+                                Console.WriteLine($"最低気温文字列: {minTempStr}");
                                 if (!string.IsNullOrEmpty(minTempStr) && int.TryParse(minTempStr, out int minTemp))
                                 {
                                     CurrentWeather.MinTemp = minTemp;
@@ -354,13 +502,13 @@ namespace DesktopMascot
                     }
                 }
 
-                System.Diagnostics.Debug.WriteLine($"気象庁API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
+                Console.WriteLine($"気象庁API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
                 CurrentWeather.LastUpdate = DateTime.Now;
                 return true;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"気象庁API取得エラー: {ex.Message}");
+                Console.WriteLine($"気象庁API取得エラー: {ex.Message}");
                 return false;
             }
         }
@@ -369,9 +517,9 @@ namespace DesktopMascot
         {
             try
             {
-                System.Diagnostics.Debug.WriteLine("Open-Meteo API: 天気情報取得開始...");
+                Console.WriteLine("Open-Meteo API: 天気情報取得開始...");
                 var response = await _httpClient.GetStringAsync(OPEN_METEO_API_URL);
-                System.Diagnostics.Debug.WriteLine($"Open-Meteo API: 応答受信 {response.Length} 文字");
+                Console.WriteLine($"Open-Meteo API: 応答受信 {response.Length} 文字");
                 
                 var weatherJson = System.Text.Json.JsonDocument.Parse(response);
                 var daily = weatherJson.RootElement.GetProperty("daily");
@@ -396,13 +544,13 @@ namespace DesktopMascot
                     CurrentWeather.MinTemp = (int)Math.Round(minTemps[0].GetDouble());
                 }
                 
-                System.Diagnostics.Debug.WriteLine($"Open-Meteo API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
+                Console.WriteLine($"Open-Meteo API成功 - 天気: {CurrentWeather.WeatherText}, 最高: {CurrentWeather.MaxTemp}, 最低: {CurrentWeather.MinTemp}");
                 CurrentWeather.LastUpdate = DateTime.Now;
                 return true;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Open-Meteo API取得エラー: {ex.Message}");
+                Console.WriteLine($"Open-Meteo API取得エラー: {ex.Message}");
                 return false;
             }
         }
@@ -464,6 +612,338 @@ namespace DesktopMascot
     }
 
     /// <summary>
+    /// VOICEVOX音声合成サービス
+    /// </summary>
+    public class VoiceVoxService : IDisposable
+    {
+        private readonly HttpClient _httpClient;
+        private readonly string _apiKey;
+        private const string BASE_URL = "https://api.tts.quest/v3/voicevox";
+        private bool _disposed = false;
+        private System.Windows.Media.MediaPlayer _currentMediaPlayer;
+
+        public VoiceVoxService(string apiKey = "")
+        {
+            _httpClient = new HttpClient();
+            _apiKey = apiKey;
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    _currentMediaPlayer?.Close();
+                    _currentMediaPlayer = null;
+                    _httpClient?.Dispose();
+                }
+                _disposed = true;
+            }
+        }
+
+        /// <summary>
+        /// テキストを音声合成して直接再生
+        /// </summary>
+        public async Task<VoiceSynthesisResult> SynthesizeAndPlayAsync(string text, int speakerId = 61)
+        {
+            try
+            {
+                var encodedText = Uri.EscapeDataString(text);
+                var url = $"{BASE_URL}/synthesis?speaker={speakerId}&text={encodedText}";
+                
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    url += $"&key={_apiKey}";
+                }
+                
+                Console.WriteLine($"VOICEVOX API リクエスト: Speaker ID = {speakerId}, URL = {url}");
+
+                var response = await _httpClient.GetAsync(url);
+                Console.WriteLine($"VOICEVOX API レスポンス: Status = {response.StatusCode}");
+                response.EnsureSuccessStatusCode();
+
+                var responseContent = await response.Content.ReadAsStringAsync();
+                var result = System.Text.Json.JsonSerializer.Deserialize<VoiceSynthesisResponse>(responseContent);
+
+                if (result?.success == true && !string.IsNullOrEmpty(result.mp3StreamingUrl))
+                {
+                    // 音声データを直接ダウンロードして再生
+                    await PlayAudioFromUrlAsync(result.mp3StreamingUrl);
+                    
+                    return new VoiceSynthesisResult
+                    {
+                        IsSuccess = true,
+                        AudioUrl = result.mp3StreamingUrl,
+                        SpeakerName = result.speakerName ?? "不明"
+                    };
+                }
+
+                return new VoiceSynthesisResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "音声合成に失敗しました"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new VoiceSynthesisResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        /// <summary>
+        /// テキストを音声合成して再生URLを取得
+        /// </summary>
+        public async Task<VoiceSynthesisResult> SynthesizeAsync(string text, int speakerId = 61)
+        {
+            try
+            {
+                var encodedText = Uri.EscapeDataString(text);
+                var url = $"{BASE_URL}/synthesis?speaker={speakerId}&text={encodedText}";
+                
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    url += $"&key={_apiKey}";
+                }
+                
+                Console.WriteLine($"VOICEVOX API リクエスト: Speaker ID = {speakerId}, URL = {url}");
+
+                var response = await _httpClient.GetAsync(url);
+                Console.WriteLine($"VOICEVOX API レスポンス: Status = {response.StatusCode}");
+                response.EnsureSuccessStatusCode();
+
+                var responseContent = await response.Content.ReadAsStringAsync();
+                var result = System.Text.Json.JsonSerializer.Deserialize<VoiceSynthesisResponse>(responseContent);
+
+                if (result?.success == true && !string.IsNullOrEmpty(result.mp3StreamingUrl))
+                {
+                    return new VoiceSynthesisResult
+                    {
+                        IsSuccess = true,
+                        AudioUrl = result.mp3StreamingUrl,
+                        SpeakerName = result.speakerName ?? "不明"
+                    };
+                }
+
+                return new VoiceSynthesisResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "音声合成に失敗しました"
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"音声合成エラー: {ex.Message}");
+                return new VoiceSynthesisResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        /// <summary>
+        /// 利用可能なスピーカーの一覧を取得
+        /// </summary>
+        public async Task<List<VoiceSpeaker>> GetSpeakersAsync()
+        {
+            try
+            {
+                var url = $"{BASE_URL}/speakers_array";
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    url += $"?key={_apiKey}";
+                }
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var responseContent = await response.Content.ReadAsStringAsync();
+                var apiResponse = System.Text.Json.JsonSerializer.Deserialize<SpeakersArrayResponse>(responseContent);
+
+                var result = new List<VoiceSpeaker>();
+                if (apiResponse?.speakers != null)
+                {
+                    for (int i = 0; i < apiResponse.speakers.Length; i++)
+                    {
+                        if (!string.IsNullOrEmpty(apiResponse.speakers[i]))
+                        {
+                            result.Add(new VoiceSpeaker
+                            {
+                                Id = i,
+                                Name = apiResponse.speakers[i]
+                            });
+                        }
+                    }
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"スピーカー取得エラー: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"スピーカー取得エラー詳細: {ex}");
+
+                // フォールバック: 静的JSONファイルから取得を試行
+                try
+                {
+                    Console.WriteLine("静的JSONファイルからスピーカー情報を取得中...");
+                    var staticUrl = "https://static.tts.quest/voicevox_speakers_utf8.json";
+                    var staticResponse = await _httpClient.GetAsync(staticUrl);
+                    staticResponse.EnsureSuccessStatusCode();
+
+                    var staticContent = await staticResponse.Content.ReadAsStringAsync();
+                    var staticSpeakers = System.Text.Json.JsonSerializer.Deserialize<string[]>(staticContent);
+
+                    var result = new List<VoiceSpeaker>();
+                    if (staticSpeakers != null)
+                    {
+                        for (int i = 0; i < staticSpeakers.Length; i++)
+                        {
+                            if (!string.IsNullOrEmpty(staticSpeakers[i]))
+                            {
+                                result.Add(new VoiceSpeaker
+                                {
+                                    Id = i,
+                                    Name = staticSpeakers[i]
+                                });
+                            }
+                        }
+                    }
+
+                    Console.WriteLine($"静的JSONから{result.Count}個のスピーカーを取得しました");
+                    return result;
+                }
+                catch (Exception staticEx)
+                {
+                    Console.WriteLine($"静的JSON取得エラー: {staticEx.Message}");
+                    return new List<VoiceSpeaker>();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 音声URLから音声データをダウンロードして再生
+        /// </summary>
+        private async Task PlayAudioFromUrlAsync(string audioUrl)
+        {
+            try
+            {
+                Console.WriteLine($"音声ダウンロード開始: {audioUrl}");
+                
+                // 音声データをダウンロード
+                var audioData = await _httpClient.GetByteArrayAsync(audioUrl);
+                
+                // 一時ファイルを作成
+                var tempPath = Path.Combine(Path.GetTempPath(), $"voicevox_temp_{Guid.NewGuid()}.mp3");
+                await File.WriteAllBytesAsync(tempPath, audioData);
+                
+                Console.WriteLine($"音声ファイル作成: {tempPath}");
+                
+                // 既存のMediaPlayerがあれば停止・クリア
+                _currentMediaPlayer?.Close();
+
+                // WindowsのMediaPlayerを使用して再生
+                _currentMediaPlayer = new System.Windows.Media.MediaPlayer();
+                var tcs = new TaskCompletionSource<bool>();
+
+                _currentMediaPlayer.MediaEnded += (s, e) =>
+                {
+                    Console.WriteLine("音声再生完了イベント発生");
+                    _currentMediaPlayer.Close();
+                    _currentMediaPlayer = null;
+                    tcs.SetResult(true);
+                };
+
+                _currentMediaPlayer.MediaFailed += (s, e) =>
+                {
+                    Console.WriteLine($"音声再生失敗: {e.ErrorException?.Message}");
+                    _currentMediaPlayer.Close();
+                    _currentMediaPlayer = null;
+                    tcs.SetException(e.ErrorException ?? new Exception("音声再生に失敗しました"));
+                };
+
+                _currentMediaPlayer.Open(new Uri(tempPath));
+                _currentMediaPlayer.Play();
+
+                Console.WriteLine("音声再生開始");
+
+                // 実際の再生完了を待つ
+                await tcs.Task;
+                Console.WriteLine("音声再生完了");
+
+                // 再生完了後に一時ファイルを削除
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                        Console.WriteLine($"一時ファイル削除: {tempPath}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"一時ファイル削除エラー: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"音声再生エラー: {ex.Message}");
+                throw;
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// 音声合成レスポンスデータ
+    /// </summary>
+    public class VoiceSynthesisResponse
+    {
+        public bool success { get; set; }
+        public string speakerName { get; set; } = "";
+        public string mp3StreamingUrl { get; set; } = "";
+    }
+
+    /// <summary>
+    /// 音声合成結果
+    /// </summary>
+    public class VoiceSynthesisResult
+    {
+        public bool IsSuccess { get; set; }
+        public string AudioUrl { get; set; } = "";
+        public string SpeakerName { get; set; } = "";
+        public string ErrorMessage { get; set; } = "";
+    }
+
+    /// <summary>
+    /// 音声スピーカー情報
+    /// </summary>
+    public class VoiceSpeaker
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    /// <summary>
+    /// スピーカー配列APIのレスポンス
+    /// </summary>
+    public class SpeakersArrayResponse
+    {
+        public bool isApiKeyValid { get; set; }
+        public string[] speakers { get; set; }
+    }
+
+    /// <summary>
     /// 設定ウィンドウ
     /// </summary>
     public partial class SettingsWindow : Window
@@ -477,8 +957,18 @@ namespace DesktopMascot
             {
                 ImagePath = currentSettings.ImagePath,
                 RssUrl = currentSettings.RssUrl,
+                RssFeeds = new List<RssFeedConfig>(currentSettings.RssFeeds.Select(f => new RssFeedConfig 
+                { 
+                    Name = f.Name, 
+                    Url = f.Url, 
+                    IsEnabled = f.IsEnabled 
+                })),
                 WindowLeft = currentSettings.WindowLeft,
-                WindowTop = currentSettings.WindowTop
+                WindowTop = currentSettings.WindowTop,
+                EnableVoiceSynthesis = currentSettings.EnableVoiceSynthesis,
+                VoiceVoxApiKey = currentSettings.VoiceVoxApiKey,
+                VoiceSpeakerId = currentSettings.VoiceSpeakerId,
+                AutoReadArticles = currentSettings.AutoReadArticles
             };
 
             InitializeComponent();
@@ -487,8 +977,8 @@ namespace DesktopMascot
 
         private void InitializeComponent()
         {
-            Width = 450;
-            Height = 300;
+            Width = 500;
+            Height = 400;
             Title = "デスクトップマスコット設定";
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ResizeMode = ResizeMode.NoResize;
@@ -497,15 +987,41 @@ namespace DesktopMascot
             grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // メイングリッド
-            var mainGrid = new Grid { Margin = new Thickness(20) };
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            // タブコントロール
+            var tabControl = new TabControl { Margin = new Thickness(10) };
+            
+            // 基本設定タブ
+            var basicTab = new TabItem { Header = "基本設定" };
+            var basicGrid = new Grid { Margin = new Thickness(20) };
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            basicTab.Content = basicGrid;
 
-            // 画像設定
+            // 音声合成設定タブ
+            var voiceTab = new TabItem { Header = "音声合成設定" };
+            var voiceGrid = new Grid { Margin = new Thickness(20) };
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            voiceTab.Content = voiceGrid;
+
+            // RSS Feed設定タブ
+            var feedTab = new TabItem { Header = "RSS Feed設定" };
+            var feedGrid = new Grid { Margin = new Thickness(20) };
+            feedGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            feedGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            feedGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            feedTab.Content = feedGrid;
+
+            // 基本設定タブ - 画像設定
             var imageLabel = new Label { Content = "マスコット画像:", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 10, 0, 5) };
             Grid.SetRow(imageLabel, 0);
 
@@ -522,35 +1038,82 @@ namespace DesktopMascot
             imagePanel.Children.Add(clearButton);
             Grid.SetRow(imagePanel, 1);
 
-            // RSS URL設定
-            var rssLabel = new Label { Content = "RSS URL:", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 10, 0, 5) };
-            Grid.SetRow(rssLabel, 2);
+            basicGrid.Children.Add(imageLabel);
+            basicGrid.Children.Add(imagePanel);
 
-            RssUrlTextBox = new TextBox { Margin = new Thickness(0, 0, 0, 15) };
-            Grid.SetRow(RssUrlTextBox, 3);
+            // RSS Feed設定タブ - Feed管理UI
+            var feedLabel = new Label { Content = "RSS Feed一覧 (最大10個):", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 10, 0, 5) };
+            Grid.SetRow(feedLabel, 0);
 
-            // プリセットボタン
-            var presetPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 20) };
-            var gizmodoBtn = new Button { Content = "Gizmodo", Width = 80, Margin = new Thickness(0, 0, 10, 0) };
-            var itmediaBtn = new Button { Content = "ITmedia", Width = 80, Margin = new Thickness(0, 0, 10, 0) };
-            var gigazineBtn = new Button { Content = "Gigazine", Width = 80 };
+            // Feedリスト表示エリア
+            FeedListBox = new ListBox { Margin = new Thickness(0, 0, 0, 10) };
+            FeedListBox.SelectionChanged += FeedListBox_SelectionChanged;
+            Grid.SetRow(FeedListBox, 1);
 
-            gizmodoBtn.Click += (s, e) => RssUrlTextBox.Text = "https://www.gizmodo.jp/index.xml";
-            itmediaBtn.Click += (s, e) => RssUrlTextBox.Text = "https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml";
-            gigazineBtn.Click += (s, e) => RssUrlTextBox.Text = "https://gigazine.net/news/rss_2.0/";
+            // Feed操作ボタン
+            var feedButtonPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            var addFeedBtn = new Button { Content = "追加", Width = 60, Margin = new Thickness(0, 0, 10, 0) };
+            var editFeedBtn = new Button { Content = "編集", Width = 60, Margin = new Thickness(0, 0, 10, 0) };
+            var deleteFeedBtn = new Button { Content = "削除", Width = 60, Margin = new Thickness(0, 0, 10, 0) };
+            var toggleFeedBtn = new Button { Content = "有効/無効", Width = 80 };
 
-            presetPanel.Children.Add(gizmodoBtn);
-            presetPanel.Children.Add(itmediaBtn);
-            presetPanel.Children.Add(gigazineBtn);
-            Grid.SetRow(presetPanel, 4);
+            addFeedBtn.Click += AddFeed_Click;
+            editFeedBtn.Click += EditFeed_Click;
+            deleteFeedBtn.Click += DeleteFeed_Click;
+            toggleFeedBtn.Click += ToggleFeed_Click;
 
-            mainGrid.Children.Add(imageLabel);
-            mainGrid.Children.Add(imagePanel);
-            mainGrid.Children.Add(rssLabel);
-            mainGrid.Children.Add(RssUrlTextBox);
-            mainGrid.Children.Add(presetPanel);
+            feedButtonPanel.Children.Add(addFeedBtn);
+            feedButtonPanel.Children.Add(editFeedBtn);
+            feedButtonPanel.Children.Add(deleteFeedBtn);
+            feedButtonPanel.Children.Add(toggleFeedBtn);
+            Grid.SetRow(feedButtonPanel, 2);
 
-            Grid.SetRow(mainGrid, 0);
+            feedGrid.Children.Add(feedLabel);
+            feedGrid.Children.Add(FeedListBox);
+            feedGrid.Children.Add(feedButtonPanel);
+
+            // 音声合成設定タブ - UI要素
+            var enableVoiceLabel = new Label { Content = "音声合成機能:", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(enableVoiceLabel, 0);
+
+            EnableVoiceCheckBox = new CheckBox { Content = "VOICEVOX による記事読み上げを有効にする", Margin = new Thickness(0, 0, 0, 15) };
+            Grid.SetRow(EnableVoiceCheckBox, 1);
+
+            var apiKeyLabel = new Label { Content = "TTS Quest API キー (オプション):", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(apiKeyLabel, 2);
+
+            VoiceApiKeyTextBox = new TextBox { Width = 300, Margin = new Thickness(0, 0, 0, 15), HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetRow(VoiceApiKeyTextBox, 3);
+
+            var speakerLabel = new Label { Content = "音声キャラクター:", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(speakerLabel, 4);
+
+            var speakerPanel = new StackPanel { Orientation = Orientation.Horizontal };
+            SpeakerComboBox = new ComboBox { Width = 200, Margin = new Thickness(0, 0, 10, 0) };
+            var testVoiceBtn = new Button { Content = "テスト再生", Width = 80 };
+            testVoiceBtn.Click += TestVoice_Click;
+            
+            speakerPanel.Children.Add(SpeakerComboBox);
+            speakerPanel.Children.Add(testVoiceBtn);
+            Grid.SetRow(speakerPanel, 5);
+
+            AutoReadCheckBox = new CheckBox { Content = "記事切り替え時に自動で読み上げる", Margin = new Thickness(0, 15, 0, 0) };
+            Grid.SetRow(AutoReadCheckBox, 6);
+
+            voiceGrid.Children.Add(enableVoiceLabel);
+            voiceGrid.Children.Add(EnableVoiceCheckBox);
+            voiceGrid.Children.Add(apiKeyLabel);
+            voiceGrid.Children.Add(VoiceApiKeyTextBox);
+            voiceGrid.Children.Add(speakerLabel);
+            voiceGrid.Children.Add(speakerPanel);
+            voiceGrid.Children.Add(AutoReadCheckBox);
+
+            // タブをTabControlに追加
+            tabControl.Items.Add(basicTab);
+            tabControl.Items.Add(voiceTab);
+            tabControl.Items.Add(feedTab);
+
+            Grid.SetRow(tabControl, 0);
 
             // ボタンパネル
             var buttonPanel = new StackPanel 
@@ -570,18 +1133,82 @@ namespace DesktopMascot
             buttonPanel.Children.Add(cancelButton);
             Grid.SetRow(buttonPanel, 1);
 
-            grid.Children.Add(mainGrid);
+            grid.Children.Add(tabControl);
             grid.Children.Add(buttonPanel);
             Content = grid;
         }
 
         public TextBox ImagePathTextBox { get; private set; }
-        public TextBox RssUrlTextBox { get; private set; }
+        public ListBox FeedListBox { get; private set; }
+        
+        // 音声合成設定UI要素
+        public CheckBox EnableVoiceCheckBox { get; private set; }
+        public TextBox VoiceApiKeyTextBox { get; private set; }
+        public ComboBox SpeakerComboBox { get; private set; }
+        public CheckBox AutoReadCheckBox { get; private set; }
 
-        private void LoadCurrentSettings()
+        private async void LoadCurrentSettings()
         {
             ImagePathTextBox.Text = Settings.ImagePath;
-            RssUrlTextBox.Text = Settings.RssUrl;
+            RefreshFeedList();
+            
+            // 音声合成設定の読み込み
+            EnableVoiceCheckBox.IsChecked = Settings.EnableVoiceSynthesis;
+            VoiceApiKeyTextBox.Text = Settings.VoiceVoxApiKey;
+            AutoReadCheckBox.IsChecked = Settings.AutoReadArticles;
+            
+            // スピーカー一覧を取得して設定
+            await LoadSpeakersAsync();
+        }
+        
+        private async Task LoadSpeakersAsync()
+        {
+            try
+            {
+                var voiceService = new VoiceVoxService(Settings.VoiceVoxApiKey);
+                var speakers = await voiceService.GetSpeakersAsync();
+                
+                SpeakerComboBox.Items.Clear();
+                foreach (var speaker in speakers)
+                {
+                    SpeakerComboBox.Items.Add(new ComboBoxItem 
+                    { 
+                        Content = speaker.Name, 
+                        Tag = speaker.Id 
+                    });
+                    
+                    if (speaker.Id == Settings.VoiceSpeakerId)
+                    {
+                        SpeakerComboBox.SelectedIndex = SpeakerComboBox.Items.Count - 1;
+                    }
+                }
+                
+                if (SpeakerComboBox.SelectedIndex == -1 && SpeakerComboBox.Items.Count > 0)
+                {
+                    SpeakerComboBox.SelectedIndex = Math.Min(Settings.VoiceSpeakerId, SpeakerComboBox.Items.Count - 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"スピーカー読み込みエラー: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"スピーカー読み込みエラー詳細: {ex}");
+                // デフォルトスピーカーを設定
+                SpeakerComboBox.Items.Clear();
+                SpeakerComboBox.Items.Add(new ComboBoxItem { Content = "ずんだもん（デフォルト）", Tag = 3 });
+                SpeakerComboBox.Items.Add(new ComboBoxItem { Content = "四国めたん", Tag = 2 });
+                SpeakerComboBox.Items.Add(new ComboBoxItem { Content = "春日部つむぎ", Tag = 8 });
+                SpeakerComboBox.SelectedIndex = 0;
+            }
+        }
+
+        private void RefreshFeedList()
+        {
+            FeedListBox.Items.Clear();
+            foreach (var feed in Settings.RssFeeds)
+            {
+                var status = feed.IsEnabled ? "有効" : "無効";
+                FeedListBox.Items.Add($"[{status}] {feed.Name} - {feed.Url}");
+            }
         }
 
         private void BrowseImage_Click(object sender, RoutedEventArgs e)
@@ -607,7 +1234,18 @@ namespace DesktopMascot
         private void OK_Click(object sender, RoutedEventArgs e)
         {
             Settings.ImagePath = ImagePathTextBox.Text;
-            Settings.RssUrl = RssUrlTextBox.Text;
+            
+            // 音声合成設定の保存
+            Settings.EnableVoiceSynthesis = EnableVoiceCheckBox.IsChecked ?? false;
+            Settings.VoiceVoxApiKey = VoiceApiKeyTextBox.Text.Trim();
+            Settings.AutoReadArticles = AutoReadCheckBox.IsChecked ?? false;
+            
+            if (SpeakerComboBox.SelectedItem is ComboBoxItem selectedSpeaker)
+            {
+                Settings.VoiceSpeakerId = (int)(selectedSpeaker.Tag ?? 61);
+                Console.WriteLine($"設定画面で話者IDを保存: {Settings.VoiceSpeakerId}");
+            }
+            
             SettingsChanged = true;
             DialogResult = true;
         }
@@ -615,6 +1253,196 @@ namespace DesktopMascot
         private void Cancel_Click(object sender, RoutedEventArgs e)
         {
             DialogResult = false;
+        }
+
+        private async void TestVoice_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var apiKey = VoiceApiKeyTextBox.Text.Trim();
+                var speakerId = 61; // デフォルト
+                
+                if (SpeakerComboBox.SelectedItem is ComboBoxItem selectedSpeaker)
+                {
+                    speakerId = (int)(selectedSpeaker.Tag ?? 61);
+                }
+                
+                var voiceService = new VoiceVoxService(apiKey);
+                var testText = "こんにちは。音声合成のテストです。";
+                
+                MessageBox.Show("音声合成をテスト中...", "テスト実行中", MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                var result = await voiceService.SynthesizeAndPlayAsync(testText, speakerId);
+                
+                if (result.IsSuccess)
+                {
+                    MessageBox.Show($"音声合成成功！\n\nスピーカー: {result.SpeakerName}\n音声が再生されます。", 
+                                  "テスト成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    MessageBox.Show($"音声合成に失敗しました。\n\nエラー: {result.ErrorMessage}", 
+                                  "テスト失敗", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"音声合成テストエラー:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Feed管理イベントハンドラ
+        private void FeedListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // 選択変更時の処理（必要に応じて後で実装）
+        }
+
+        private void AddFeed_Click(object sender, RoutedEventArgs e)
+        {
+            if (Settings.RssFeeds.Count >= 10)
+            {
+                MessageBox.Show("最大10個までしか追加できません。", "制限", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var dialog = new FeedEditDialog();
+            if (dialog.ShowDialog() == true)
+            {
+                Settings.RssFeeds.Add(new RssFeedConfig
+                {
+                    Name = dialog.FeedName,
+                    Url = dialog.FeedUrl,
+                    IsEnabled = true
+                });
+                RefreshFeedList();
+            }
+        }
+
+        private void EditFeed_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedIndex = FeedListBox.SelectedIndex;
+            if (selectedIndex < 0 || selectedIndex >= Settings.RssFeeds.Count) return;
+
+            var feed = Settings.RssFeeds[selectedIndex];
+            var dialog = new FeedEditDialog(feed.Name, feed.Url);
+            if (dialog.ShowDialog() == true)
+            {
+                feed.Name = dialog.FeedName;
+                feed.Url = dialog.FeedUrl;
+                RefreshFeedList();
+            }
+        }
+
+        private void DeleteFeed_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedIndex = FeedListBox.SelectedIndex;
+            if (selectedIndex < 0 || selectedIndex >= Settings.RssFeeds.Count) return;
+
+            var feed = Settings.RssFeeds[selectedIndex];
+            var result = MessageBox.Show($"'{feed.Name}' を削除しますか？", "確認", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result == MessageBoxResult.Yes)
+            {
+                Settings.RssFeeds.RemoveAt(selectedIndex);
+                RefreshFeedList();
+            }
+        }
+
+        private void ToggleFeed_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedIndex = FeedListBox.SelectedIndex;
+            if (selectedIndex < 0 || selectedIndex >= Settings.RssFeeds.Count) return;
+
+            var feed = Settings.RssFeeds[selectedIndex];
+            feed.IsEnabled = !feed.IsEnabled;
+            RefreshFeedList();
+        }
+
+    }
+
+    /// <summary>
+    /// Feed編集ダイアログ
+    /// </summary>
+    public partial class FeedEditDialog : Window
+    {
+        public string FeedName { get; private set; } = "";
+        public string FeedUrl { get; private set; } = "";
+        
+        private TextBox nameTextBox;
+        private TextBox urlTextBox;
+
+        public FeedEditDialog(string name = "", string url = "")
+        {
+            FeedName = name;
+            FeedUrl = url;
+            InitializeComponent();
+            nameTextBox.Text = name;
+            urlTextBox.Text = url;
+        }
+
+        private void InitializeComponent()
+        {
+            Width = 400;
+            Height = 180;
+            Title = "RSS Feed 編集";
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            ResizeMode = ResizeMode.NoResize;
+
+            var grid = new Grid { Margin = new Thickness(20) };
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            // Feed名
+            var nameLabel = new Label { Content = "Feed名:", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(nameLabel, 0);
+
+            nameTextBox = new TextBox { Margin = new Thickness(0, 0, 0, 15) };
+            Grid.SetRow(nameTextBox, 1);
+
+            // Feed URL
+            var urlLabel = new Label { Content = "Feed URL:", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(urlLabel, 2);
+
+            urlTextBox = new TextBox { Margin = new Thickness(0, 0, 0, 15) };
+            Grid.SetRow(urlTextBox, 3);
+
+            // ボタンパネル
+            var buttonPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 10, 0, 0)
+            };
+
+            var okButton = new Button { Content = "OK", Width = 80, Margin = new Thickness(0, 0, 10, 0), IsDefault = true };
+            var cancelButton = new Button { Content = "キャンセル", Width = 80, IsCancel = true };
+
+            okButton.Click += (s, e) => {
+                if (string.IsNullOrWhiteSpace(nameTextBox.Text) || string.IsNullOrWhiteSpace(urlTextBox.Text))
+                {
+                    MessageBox.Show("Feed名とURLを両方入力してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                FeedName = nameTextBox.Text.Trim();
+                FeedUrl = urlTextBox.Text.Trim();
+                DialogResult = true;
+            };
+
+            cancelButton.Click += (s, e) => DialogResult = false;
+
+            buttonPanel.Children.Add(okButton);
+            buttonPanel.Children.Add(cancelButton);
+            Grid.SetRow(buttonPanel, 4);
+
+            grid.Children.Add(nameLabel);
+            grid.Children.Add(nameTextBox);
+            grid.Children.Add(urlLabel);
+            grid.Children.Add(urlTextBox);
+            grid.Children.Add(buttonPanel);
+
+            Content = grid;
         }
     }
 
@@ -625,6 +1453,7 @@ namespace DesktopMascot
     {
         public int CurrentArticleIndex { get; set; } = 0;
         public int TotalArticles { get; set; } = 0;
+        public bool IsReadingAloud { get; set; } = false; // 読み上げ中フラグ
         private DispatcherTimer _autoAdvanceTimer;
 
         public SpeechBubbleWindow()
@@ -638,8 +1467,22 @@ namespace DesktopMascot
             _autoAdvanceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
             _autoAdvanceTimer.Tick += (s, e) =>
             {
-                _autoAdvanceTimer.Stop();
-                NextRequested?.Invoke(this, EventArgs.Empty);
+                Console.WriteLine($"自動送りタイマー発火: IsReadingAloud = {IsReadingAloud}");
+                // 読み上げ中は自動送りをスキップ
+                if (!IsReadingAloud)
+                {
+                    Console.WriteLine("自動送り実行");
+                    _autoAdvanceTimer.Stop();
+                    NextRequested?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    Console.WriteLine("読み上げ中のため自動送りをスキップ、5秒後に再チェック");
+                    // 読み上げ中の場合は5秒後に再チェック
+                    _autoAdvanceTimer.Stop();
+                    _autoAdvanceTimer.Interval = TimeSpan.FromSeconds(5);
+                    _autoAdvanceTimer.Start();
+                }
             };
             
             // ウィンドウ上でのマウス操作やキー操作でタイマーリセット
@@ -684,6 +1527,14 @@ namespace DesktopMascot
             PrevButton = new Button { Content = "◀", Width = 25, Height = 25, FontSize = 10, Margin = new Thickness(0, 0, 3, 0) };
             NextButton = new Button { Content = "▶", Width = 25, Height = 25, FontSize = 10, Margin = new Thickness(0, 0, 8, 0) };
             CounterLabel = new Label { Content = "1/1", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+            SourceLabel = new TextBlock 
+            { 
+                Text = "", 
+                FontSize = 9, 
+                Foreground = Brushes.Gray, 
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
 
             PrevButton.Click += (s, e) => {
                 StopAutoAdvanceTimer();
@@ -743,6 +1594,14 @@ namespace DesktopMascot
                 HorizontalAlignment = HorizontalAlignment.Right
             };
 
+            var readAloudButton = new Button
+            {
+                Content = "🔊読み上げ",
+                Margin = new Thickness(0, 0, 5, 0),
+                Padding = new Thickness(8, 3, 8, 3),
+                FontSize = 9
+            };
+
             var openButton = new Button
             {
                 Content = "記事を開く",
@@ -758,6 +1617,9 @@ namespace DesktopMascot
                 FontSize = 9
             };
 
+            readAloudButton.Click += (s, e) => {
+                OnReadAloud();
+            };
             openButton.Click += (s, e) => {
                 StopAutoAdvanceTimer();
                 OnOpenArticle();
@@ -767,12 +1629,24 @@ namespace DesktopMascot
                 Hide();
             };
 
+            buttonPanel.Children.Add(readAloudButton);
             buttonPanel.Children.Add(openButton);
             buttonPanel.Children.Add(closeButton);
+
+            // 出典元表示パネル（右下）
+            var sourcePanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 3, 0, 0)
+            };
+
+            sourcePanel.Children.Add(SourceLabel);
 
             stackPanel.Children.Add(headerPanel);
             stackPanel.Children.Add(contentArea);
             stackPanel.Children.Add(buttonPanel);
+            stackPanel.Children.Add(sourcePanel);
 
             mainBorder.Child = stackPanel;
             Content = mainBorder;
@@ -786,11 +1660,13 @@ namespace DesktopMascot
         public Button PrevButton { get; private set; }
         public Button NextButton { get; private set; }
         public Label CounterLabel { get; private set; }
+        public TextBlock SourceLabel { get; private set; }
         public Image ThumbnailImage { get; private set; }
 
         public event EventHandler OpenArticleRequested;
         public event EventHandler PreviousRequested;
         public event EventHandler NextRequested;
+        public event EventHandler ReadAloudRequested;
 
         private void OnOpenArticle()
         {
@@ -798,7 +1674,12 @@ namespace DesktopMascot
             Hide();
         }
 
-        public void ShowBubble(Point position, string title, string content, string thumbnailUrl, int currentIndex, int totalCount)
+        private void OnReadAloud()
+        {
+            ReadAloudRequested?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void ShowBubble(Point position, string title, string content, string thumbnailUrl, int currentIndex, int totalCount, string sourceName = "")
         {
             CurrentArticleIndex = currentIndex;
             TotalArticles = totalCount;
@@ -806,6 +1687,7 @@ namespace DesktopMascot
             TitleBlock.Text = title.Length > 60 ? title.Substring(0, 60) + "..." : title;
             ContentBlock.Text = content.Length > 300 ? content.Substring(0, 300) + "..." : content;
             CounterLabel.Content = $"{currentIndex + 1}/{totalCount}";
+            SourceLabel.Text = !string.IsNullOrEmpty(sourceName) ? $"出典: {sourceName}" : "";
 
             // サムネイル画像の設定
             if (!string.IsNullOrEmpty(thumbnailUrl))
@@ -838,6 +1720,8 @@ namespace DesktopMascot
             _autoAdvanceTimer?.Stop();
             if (TotalArticles > 1)
             {
+                // インターバルを通常の15秒にリセット
+                _autoAdvanceTimer.Interval = TimeSpan.FromSeconds(15);
                 _autoAdvanceTimer?.Start();
             }
         }
@@ -855,13 +1739,20 @@ namespace DesktopMascot
     {
         private RssService _rssService;
         private WeatherService _weatherService;
+        private VoiceVoxService _voiceVoxService;
         private int _currentArticleIndex = 0;
         private SpeechBubbleWindow _speechBubble;
         private DispatcherTimer _idleTimer;
         private DispatcherTimer _rssTimer;
         private DispatcherTimer _weatherTimer;
+        private DispatcherTimer _blinkTimer;
         private bool _isClickThrough = false;
         private MascotSettings _settings;
+
+        // 瞬きアニメーション用
+        private BitmapImage _normalImage;
+        private BitmapImage _blinkImage;
+        private Random _random = new Random();
 
         public MascotWindow()
         {
@@ -869,7 +1760,8 @@ namespace DesktopMascot
             InitializeComponent();
             InitializeServices();
             LoadMascotImage();
-            StartIdleAnimation();
+            InitializeBlinkAnimation();
+            // StartIdleAnimation(); // 瞬き確認のため一時無効化
             StartRssAutoUpdate();
             StartWeatherAutoUpdate();
         }
@@ -895,6 +1787,8 @@ namespace DesktopMascot
                 Width = 150,     // 80→150
                 Height = 270,    // 80→270
                 Cursor = Cursors.Hand,
+                Stretch = Stretch.Uniform,  // アスペクト比を保持して均等拡縮
+                StretchDirection = StretchDirection.Both,
                 Margin = new Thickness(0, 30, 0, 0) // 天気表示のスペースを空けるため下に移動
             };
 
@@ -1006,18 +1900,24 @@ namespace DesktopMascot
             {
                 if (!string.IsNullOrEmpty(_settings.ImagePath) && File.Exists(_settings.ImagePath))
                 {
-                    var bitmap = new BitmapImage();
-                    bitmap.BeginInit();
-                    bitmap.UriSource = new Uri(_settings.ImagePath);
-                    bitmap.DecodePixelWidth = 150;   // 80→150
-                    bitmap.DecodePixelHeight = 270;  // 80→270
-                    bitmap.EndInit();
-                    MascotImage.Source = bitmap;
+                    // 通常画像の読み込み
+                    _normalImage = new BitmapImage();
+                    _normalImage.BeginInit();
+                    _normalImage.UriSource = new Uri(_settings.ImagePath);
+                    _normalImage.DecodePixelWidth = 150;
+                    // アスペクト比を保持するためHeightは自動計算させる
+                    _normalImage.EndInit();
+                    MascotImage.Source = _normalImage;
+
+                    // 瞬き画像の読み込み（同じディレクトリでファイル名に_blinkを追加）
+                    LoadBlinkImage();
                 }
                 else
                 {
                     // デフォルトの絵文字
                     MascotImage.Source = CreateEmojiImage("🐱");
+                    _normalImage = null;
+                    _blinkImage = null;
                 }
             }
             catch
@@ -1047,14 +1947,112 @@ namespace DesktopMascot
             return bitmap;
         }
 
+        private void LoadBlinkImage()
+        {
+            try
+            {
+                // 通常画像のファイル名から瞬き画像のパスを生成
+                var directory = Path.GetDirectoryName(_settings.ImagePath);
+                var fileName = Path.GetFileNameWithoutExtension(_settings.ImagePath);
+                var extension = Path.GetExtension(_settings.ImagePath);
+                var blinkPath = Path.Combine(directory, $"{fileName}_blink{extension}");
+
+                if (File.Exists(blinkPath))
+                {
+                    _blinkImage = new BitmapImage();
+                    _blinkImage.BeginInit();
+                    _blinkImage.UriSource = new Uri(blinkPath);
+                    _blinkImage.DecodePixelWidth = 150;
+                    // アスペクト比を保持するためHeightは自動計算させる
+                    _blinkImage.EndInit();
+                    Console.WriteLine($"瞬き画像を読み込みました: {blinkPath}");
+                }
+                else
+                {
+                    Console.WriteLine($"瞬き画像が見つかりません: {blinkPath}");
+                    _blinkImage = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"瞬き画像読み込みエラー: {ex.Message}");
+                _blinkImage = null;
+            }
+        }
+
+        private void InitializeBlinkAnimation()
+        {
+            if (_blinkImage == null) return;
+
+            _blinkTimer = new DispatcherTimer();
+            _blinkTimer.Tick += BlinkTimer_Tick;
+            ResetBlinkTimer();
+            Console.WriteLine("瞬きアニメーションを初期化しました");
+        }
+
+        private void BlinkTimer_Tick(object sender, EventArgs e)
+        {
+            _blinkTimer.Stop(); // 瞬き中は次の瞬きをストップ
+            DoBlinkAnimation();
+        }
+
+        private async void DoBlinkAnimation()
+        {
+            if (_blinkImage == null || _normalImage == null) return;
+
+            try
+            {
+                // デバッグ情報出力
+                Console.WriteLine($"通常画像サイズ: {_normalImage.PixelWidth} x {_normalImage.PixelHeight}");
+                Console.WriteLine($"瞬き画像サイズ: {_blinkImage.PixelWidth} x {_blinkImage.PixelHeight}");
+
+                // 瞬きアニメーション
+                MascotImage.Source = _blinkImage;  // 目を閉じる
+                await Task.Delay(120);             // 0.12秒間
+                MascotImage.Source = _normalImage; // 目を開ける
+
+                Console.WriteLine("瞬きアニメーション実行");
+                ResetBlinkTimer(); // 次の瞬きをスケジュール
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"瞬きアニメーションエラー: {ex.Message}");
+                MascotImage.Source = _normalImage; // 安全のため通常画像に戻す
+                ResetBlinkTimer();
+            }
+        }
+
+        private void ResetBlinkTimer()
+        {
+            if (_blinkTimer == null || _blinkImage == null) return;
+
+            // 読み上げ中は頻繁に瞬き、そうでなければ2-6秒間隔でランダム
+            var minInterval = _speechBubble?.IsReadingAloud == true ? 800 : 2000;
+            var maxInterval = _speechBubble?.IsReadingAloud == true ? 1500 : 6000;
+
+            var interval = _random.Next(minInterval, maxInterval);
+            _blinkTimer.Interval = TimeSpan.FromMilliseconds(interval);
+            _blinkTimer.Start();
+        }
+
         private void InitializeServices()
         {
-            _rssService = new RssService(_settings.RssUrl);
+            _rssService = new RssService(_settings.RssFeeds);
             _weatherService = new WeatherService();
+            
+            // 音声合成サービス初期化
+            Console.WriteLine($"設定読み込み完了: VoiceSpeakerId = {_settings.VoiceSpeakerId}, EnableVoiceSynthesis = {_settings.EnableVoiceSynthesis}");
+            if (_settings.EnableVoiceSynthesis)
+            {
+                _voiceVoxService = new VoiceVoxService(_settings.VoiceVoxApiKey);
+                Console.WriteLine("音声合成サービスを初期化しました");
+            }
+            
             _speechBubble = new SpeechBubbleWindow();
             _speechBubble.OpenArticleRequested += OnOpenArticleRequested;
             _speechBubble.PreviousRequested += OnPreviousRequested;
             _speechBubble.NextRequested += OnNextRequested;
+            _speechBubble.ReadAloudRequested += OnReadAloudRequested;
 
             // 初期RSS取得
             _ = UpdateRssAsync();
@@ -1066,7 +2064,7 @@ namespace DesktopMascot
                 if (!success)
                 {
                     // API取得失敗時はエラー表示
-                    System.Diagnostics.Debug.WriteLine("API取得失敗、エラー表示を使用");
+                    Console.WriteLine("API取得失敗、エラー表示を使用");
                     _weatherService.CurrentWeather.WeatherCode = "❌";
                     _weatherService.CurrentWeather.WeatherText = "取得失敗";
                     _weatherService.CurrentWeather.MaxTemp = null;
@@ -1129,6 +2127,10 @@ namespace DesktopMascot
 
         private void AnimateMascot()
         {
+            // 瞬き確認のため一時無効化
+            return;
+
+            /*
             var scaleTransform = new ScaleTransform(1.0, 1.0);
             MascotImage.RenderTransform = scaleTransform;
             MascotImage.RenderTransformOrigin = new Point(0.5, 0.5);
@@ -1140,6 +2142,10 @@ namespace DesktopMascot
 
             scaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
             scaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+            */
+            
+            // スピーチバブルも更新
+            ShowSpeechBubble();
         }
 
         private void StartRssAutoUpdate()
@@ -1178,11 +2184,11 @@ namespace DesktopMascot
         private void UpdateWeatherDisplay()
         {
             var weather = _weatherService.CurrentWeather;
-            System.Diagnostics.Debug.WriteLine($"UpdateWeatherDisplay呼び出し - 天気: {weather.WeatherText}, アイコン: {weather.WeatherCode}");
+            Console.WriteLine($"UpdateWeatherDisplay呼び出し - 天気: {weather.WeatherText}, アイコン: {weather.WeatherCode}");
             
             // 天気アイコンを更新
             WeatherIcon.Text = weather.WeatherCode;
-            System.Diagnostics.Debug.WriteLine($"WeatherIcon.Text設定: {WeatherIcon.Text}");
+            Console.WriteLine($"WeatherIcon.Text設定: {WeatherIcon.Text}");
             
             // 気温テキストを更新
             var tempText = "";
@@ -1208,7 +2214,7 @@ namespace DesktopMascot
             }
             
             TemperatureText.Text = tempText;
-            System.Diagnostics.Debug.WriteLine($"TemperatureText.Text設定: {TemperatureText.Text}");
+            Console.WriteLine($"TemperatureText.Text設定: {TemperatureText.Text}");
         }
 
         private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1254,18 +2260,40 @@ namespace DesktopMascot
             var settingsWindow = new SettingsWindow(_settings);
             if (settingsWindow.ShowDialog() == true && settingsWindow.SettingsChanged)
             {
+                Console.WriteLine($"設定変更を反映: VoiceSpeakerId = {settingsWindow.Settings.VoiceSpeakerId}");
                 _settings = settingsWindow.Settings;
                 _settings.Save();
+                Console.WriteLine($"設定保存完了: VoiceSpeakerId = {_settings.VoiceSpeakerId}");
 
                 // 画像を再読み込み
                 LoadMascotImage();
 
-                // RSS URLが変更された場合は更新
-                if (_rssService.CurrentRssUrl != _settings.RssUrl)
+                // 音声合成サービスを再初期化（読み上げ中でなければ）
+                if (_settings.EnableVoiceSynthesis)
                 {
-                    _rssService.SetRssUrl(_settings.RssUrl);
-                    _ = UpdateRssAsync();
+                    // 読み上げ中でなければサービスを再初期化
+                    if (_speechBubble?.IsReadingAloud != true)
+                    {
+                        _voiceVoxService?.Dispose();
+                        _voiceVoxService = new VoiceVoxService(_settings.VoiceVoxApiKey);
+                        Console.WriteLine("音声合成サービスを再初期化しました");
+                    }
+                    else
+                    {
+                        Console.WriteLine("読み上げ中のため音声合成サービスの再初期化をスキップ");
+                    }
                 }
+                else
+                {
+                    // 無効化は読み上げ中でも実行（安全性のため）
+                    _voiceVoxService?.Dispose();
+                    _voiceVoxService = null;
+                    Console.WriteLine("音声合成サービスを無効化しました");
+                }
+
+                // RSS Feed設定が変更された場合は更新
+                _rssService.UpdateFeedList(_settings.RssFeeds);
+                _ = UpdateRssAsync();
             }
         }
 
@@ -1292,13 +2320,17 @@ namespace DesktopMascot
             if (!_rssService.Articles.Any())
             {
                 var position = GetBubblePosition();
-                _speechBubble.ShowBubble(position, "記事がありません", "RSS更新を実行してください。", "", 0, 0);
+                _speechBubble.ShowBubble(position, "記事がありません", "RSS更新を実行してください。", "", 0, 0, "");
                 return;
             }
 
             var article = _rssService.Articles[_currentArticleIndex];
             var bubblePosition = GetBubblePosition();
-            _speechBubble.ShowBubble(bubblePosition, article.Title, article.Description, article.ThumbnailUrl, _currentArticleIndex, _rssService.Articles.Count);
+            
+            var title = article.Title;
+            var description = article.Description;
+            
+            _speechBubble.ShowBubble(bubblePosition, title, description, article.ThumbnailUrl, _currentArticleIndex, _rssService.Articles.Count, article.SourceName);
         }
 
         private Point GetBubblePosition()
@@ -1339,6 +2371,68 @@ namespace DesktopMascot
                 }
                 ShowSpeechBubble();
                 AnimateMascot();
+            }
+        }
+
+        private async void OnReadAloudRequested(object sender, EventArgs e)
+        {
+            if (!_settings.EnableVoiceSynthesis || _voiceVoxService == null || !_rssService.Articles.Any())
+            {
+                return;
+            }
+
+            try
+            {
+                // 読み上げ開始フラグを設定
+                _speechBubble.IsReadingAloud = true;
+                Console.WriteLine("読み上げ開始フラグを設定: IsReadingAloud = true");
+
+                // 瞬きタイマーを更新（読み上げ中は頻繁に）
+                ResetBlinkTimer();
+                
+                var article = _rssService.Articles[_currentArticleIndex];
+                var textToRead = $"{article.Title}。{article.Description}";
+                
+                // 長いテキストは制限（VOICEVOX APIの制限に配慮）
+                if (textToRead.Length > 300)
+                {
+                    textToRead = textToRead.Substring(0, 300) + "...";
+                }
+
+                Console.WriteLine($"音声合成開始: {textToRead.Substring(0, Math.Min(50, textToRead.Length))}...");
+                Console.WriteLine($"使用する話者ID: {_settings.VoiceSpeakerId}");
+
+                var result = await _voiceVoxService.SynthesizeAndPlayAsync(textToRead, _settings.VoiceSpeakerId);
+                
+                if (result.IsSuccess)
+                {
+                    Console.WriteLine($"音声再生成功: {result.SpeakerName}");
+                    // SynthesizeAndPlayAsyncが完了 = 音声再生完了なので、フラグをリセット
+                    _speechBubble.IsReadingAloud = false;
+                    Console.WriteLine("音声再生完了によりフラグをリセット: IsReadingAloud = false");
+
+                    // 瞬きタイマーを更新（通常間隔に戻す）
+                    ResetBlinkTimer();
+                }
+                else
+                {
+                    Console.WriteLine($"音声合成失敗: {result.ErrorMessage}");
+                    // 失敗時もフラグをリセット
+                    _speechBubble.IsReadingAloud = false;
+
+                    // 瞬きタイマーを更新（通常間隔に戻す）
+                    ResetBlinkTimer();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"音声読み上げエラー: {ex.Message}");
+                // エラー時は即座にフラグをリセット
+                if (_speechBubble != null)
+                    _speechBubble.IsReadingAloud = false;
+
+                // 瞬きタイマーを更新（通常間隔に戻す）
+                ResetBlinkTimer();
             }
         }
 
@@ -1398,9 +2492,16 @@ namespace DesktopMascot
     /// </summary>
     public static class Program
     {
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern bool AllocConsole();
+
         [STAThread]
         public static void Main()
         {
+            // デバッグ用にコンソールウィンドウを表示
+            AllocConsole();
+            Console.WriteLine("=== DesktopMascot Enhanced Debug Console ===");
+            
             var app = new App();
             app.Run();
         }
