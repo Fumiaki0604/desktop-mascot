@@ -16,6 +16,8 @@ using System.Windows.Threading;
 using System.Xml.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
+using NAudio.Wave;
+using NAudio.Dsp;
 
 namespace DesktopMascot
 {
@@ -220,7 +222,7 @@ namespace DesktopMascot
             // 重複除去とソート
             Articles = RemoveDuplicates(allArticles)
                 .OrderByDescending(a => a.PublishedDate)
-                .Take(20) // 最終的に20記事まで
+                .Take(30) // 最終的に30記事まで
                 .ToList();
 
             LastUpdate = DateTime.Now;
@@ -622,6 +624,10 @@ namespace DesktopMascot
         private bool _disposed = false;
         private System.Windows.Media.MediaPlayer _currentMediaPlayer;
 
+        // リップシンク制御用コールバック
+        public Action OnAudioPlayStarted { get; set; }
+        public Action OnAudioPlayEnded { get; set; }
+
         public VoiceVoxService(string apiKey = "")
         {
             _httpClient = new HttpClient();
@@ -859,6 +865,7 @@ namespace DesktopMascot
                 _currentMediaPlayer.MediaEnded += (s, e) =>
                 {
                     Console.WriteLine("音声再生完了イベント発生");
+                    OnAudioPlayEnded?.Invoke(); // リップシンク停止コールバック
                     _currentMediaPlayer.Close();
                     _currentMediaPlayer = null;
                     tcs.SetResult(true);
@@ -867,6 +874,7 @@ namespace DesktopMascot
                 _currentMediaPlayer.MediaFailed += (s, e) =>
                 {
                     Console.WriteLine($"音声再生失敗: {e.ErrorException?.Message}");
+                    OnAudioPlayEnded?.Invoke(); // リップシンク停止コールバック
                     _currentMediaPlayer.Close();
                     _currentMediaPlayer = null;
                     tcs.SetException(e.ErrorException ?? new Exception("音声再生に失敗しました"));
@@ -874,6 +882,7 @@ namespace DesktopMascot
 
                 _currentMediaPlayer.Open(new Uri(tempPath));
                 _currentMediaPlayer.Play();
+                OnAudioPlayStarted?.Invoke(); // リップシンク開始コールバック
 
                 Console.WriteLine("音声再生開始");
 
@@ -978,7 +987,7 @@ namespace DesktopMascot
         private void InitializeComponent()
         {
             Width = 500;
-            Height = 400;
+            Height = 500;
             Title = "デスクトップマスコット設定";
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ResizeMode = ResizeMode.NoResize;
@@ -1382,7 +1391,7 @@ namespace DesktopMascot
         private void InitializeComponent()
         {
             Width = 400;
-            Height = 180;
+            Height = 220;
             Title = "RSS Feed 編集";
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
             ResizeMode = ResizeMode.NoResize;
@@ -1754,6 +1763,17 @@ namespace DesktopMascot
         private BitmapImage _blinkImage;
         private Random _random = new Random();
 
+        // 口パクアニメーション用
+        private List<BitmapImage> _mouthImages = new List<BitmapImage>();
+        private int _currentMouthIndex = 0;
+
+        // リップシンク用音声解析
+        private WasapiLoopbackCapture _audioCapture;
+        private DispatcherTimer _lipSyncTimer;
+        private bool _isLipSyncActive = false;
+        private float[] _audioBuffer;
+        private readonly int _fftLength = 1024;
+
         public MascotWindow()
         {
             _settings = MascotSettings.Load();
@@ -1761,7 +1781,8 @@ namespace DesktopMascot
             InitializeServices();
             LoadMascotImage();
             InitializeBlinkAnimation();
-            // StartIdleAnimation(); // 瞬き確認のため一時無効化
+            InitializeLipSync();
+            StartIdleAnimation();
             StartRssAutoUpdate();
             StartWeatherAutoUpdate();
         }
@@ -1778,6 +1799,9 @@ namespace DesktopMascot
 
             Left = _settings.WindowLeft;
             Top = _settings.WindowTop;
+
+            // ウィンドウクローズ時のイベントハンドラ追加
+            Closing += MascotWindow_Closing;
 
             // メインコンテナ（Grid）
             var mainGrid = new Grid();
@@ -1911,6 +1935,9 @@ namespace DesktopMascot
 
                     // 瞬き画像の読み込み（同じディレクトリでファイル名に_blinkを追加）
                     LoadBlinkImage();
+
+                    // 口パク画像の読み込み（同じディレクトリでファイル名に_mouth1, _mouth2...を追加）
+                    LoadMouthImages();
                 }
                 else
                 {
@@ -1918,12 +1945,16 @@ namespace DesktopMascot
                     MascotImage.Source = CreateEmojiImage("🐱");
                     _normalImage = null;
                     _blinkImage = null;
+                    _mouthImages.Clear();
                 }
             }
             catch
             {
                 // エラー時はデフォルト絵文字
                 MascotImage.Source = CreateEmojiImage("🐱");
+                _normalImage = null;
+                _blinkImage = null;
+                _mouthImages.Clear();
             }
         }
 
@@ -1977,6 +2008,51 @@ namespace DesktopMascot
             {
                 Console.WriteLine($"瞬き画像読み込みエラー: {ex.Message}");
                 _blinkImage = null;
+            }
+        }
+
+        private void LoadMouthImages()
+        {
+            try
+            {
+                _mouthImages.Clear();
+
+                // 通常画像のファイル名から口パク画像のパスを生成
+                var directory = Path.GetDirectoryName(_settings.ImagePath);
+                var fileName = Path.GetFileNameWithoutExtension(_settings.ImagePath);
+                var extension = Path.GetExtension(_settings.ImagePath);
+
+                // _mouth1.png, _mouth2.png, ... の形式で検索
+                int mouthIndex = 1;
+                while (true)
+                {
+                    var mouthPath = Path.Combine(directory, $"{fileName}_mouth{mouthIndex}{extension}");
+
+                    if (File.Exists(mouthPath))
+                    {
+                        var mouthImage = new BitmapImage();
+                        mouthImage.BeginInit();
+                        mouthImage.UriSource = new Uri(mouthPath);
+                        mouthImage.DecodePixelWidth = 150;
+                        // アスペクト比を保持するためHeightは自動計算させる
+                        mouthImage.EndInit();
+
+                        _mouthImages.Add(mouthImage);
+                        Console.WriteLine($"口パク画像を読み込みました: {mouthPath}");
+                        mouthIndex++;
+                    }
+                    else
+                    {
+                        break; // 連続する番号の画像が見つからなくなったら終了
+                    }
+                }
+
+                Console.WriteLine($"口パク画像を{_mouthImages.Count}枚読み込みました");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"口パク画像読み込みエラー: {ex.Message}");
+                _mouthImages.Clear();
             }
         }
 
@@ -2035,6 +2111,209 @@ namespace DesktopMascot
             _blinkTimer.Start();
         }
 
+        // 口パクアニメーション制御メソッド
+        private void SetMouthImage(int index)
+        {
+            if (_mouthImages.Count == 0 || index < 0 || index >= _mouthImages.Count) return;
+
+            try
+            {
+                MascotImage.Source = _mouthImages[index];
+                _currentMouthIndex = index;
+                Console.WriteLine($"口パク画像を設定: index={index}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"口パク画像設定エラー: {ex.Message}");
+            }
+        }
+
+        private void NextMouthImage()
+        {
+            if (_mouthImages.Count == 0) return;
+
+            _currentMouthIndex = (_currentMouthIndex + 1) % _mouthImages.Count;
+            SetMouthImage(_currentMouthIndex);
+        }
+
+        private void ResetToNormalImage()
+        {
+            if (_normalImage == null) return;
+
+            try
+            {
+                MascotImage.Source = _normalImage;
+                _currentMouthIndex = 0;
+                Console.WriteLine("通常画像に戻しました");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"通常画像復帰エラー: {ex.Message}");
+            }
+        }
+
+        public int GetMouthImageCount()
+        {
+            return _mouthImages.Count;
+        }
+
+        // リップシンク機能
+        private void InitializeLipSync()
+        {
+            try
+            {
+                if (_mouthImages.Count == 0)
+                {
+                    Console.WriteLine("口パク画像がないため、リップシンクを無効化");
+                    return;
+                }
+
+                // オーディオキャプチャ初期化（システム音声をループバック）
+                _audioCapture = new WasapiLoopbackCapture();
+                _audioCapture.DataAvailable += OnAudioDataAvailable;
+                _audioCapture.RecordingStopped += OnRecordingStopped;
+
+                // リップシンクタイマー初期化
+                _lipSyncTimer = new DispatcherTimer();
+                _lipSyncTimer.Interval = TimeSpan.FromMilliseconds(50); // 20fps
+                _lipSyncTimer.Tick += LipSyncTimer_Tick;
+
+                Console.WriteLine("リップシンクシステム初期化完了");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"リップシンク初期化エラー: {ex.Message}");
+            }
+        }
+
+        private void StartLipSync()
+        {
+            try
+            {
+                if (_audioCapture == null || _mouthImages.Count == 0) return;
+
+                _isLipSyncActive = true;
+                _audioCapture.StartRecording();
+                _lipSyncTimer.Start();
+                Console.WriteLine("リップシンク開始");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"リップシンク開始エラー: {ex.Message}");
+            }
+        }
+
+        private void StopLipSync()
+        {
+            try
+            {
+                _isLipSyncActive = false;
+                _audioCapture?.StopRecording();
+                _lipSyncTimer?.Stop();
+
+                // 通常画像に戻す
+                ResetToNormalImage();
+                Console.WriteLine("リップシンク停止");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"リップシンク停止エラー: {ex.Message}");
+            }
+        }
+
+        private void OnAudioDataAvailable(object sender, WaveInEventArgs e)
+        {
+            try
+            {
+                if (!_isLipSyncActive) return;
+
+                // 16bit PCMデータをfloat配列に変換
+                int samplesCount = e.BytesRecorded / 2; // 16bit = 2 bytes per sample
+                if (_audioBuffer == null || _audioBuffer.Length < samplesCount)
+                {
+                    _audioBuffer = new float[samplesCount];
+                }
+
+                for (int i = 0; i < samplesCount; i++)
+                {
+                    short sample = BitConverter.ToInt16(e.Buffer, i * 2);
+                    _audioBuffer[i] = sample / 32768f; // 正規化
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"音声データ処理エラー: {ex.Message}");
+            }
+        }
+
+        private void OnRecordingStopped(object sender, StoppedEventArgs e)
+        {
+            Console.WriteLine("音声録音停止");
+        }
+
+        private void LipSyncTimer_Tick(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!_isLipSyncActive || _audioBuffer == null || _mouthImages.Count == 0) return;
+
+                // 音声レベル解析
+                float averageVolume = CalculateAverageVolume();
+
+                // 音声レベルに基づいて口パク制御
+                if (averageVolume > 0.01f) // 閾値調整可能
+                {
+                    // 音量に応じて口の開き度合いを決定
+                    int mouthIndex = (int)(averageVolume * _mouthImages.Count * 10) % _mouthImages.Count;
+                    SetMouthImage(mouthIndex);
+                }
+                else
+                {
+                    // 無音時は通常画像
+                    ResetToNormalImage();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"リップシンクタイマーエラー: {ex.Message}");
+            }
+        }
+
+        private float CalculateAverageVolume()
+        {
+            if (_audioBuffer == null || _audioBuffer.Length == 0) return 0f;
+
+            float sum = 0f;
+            for (int i = 0; i < _audioBuffer.Length; i++)
+            {
+                sum += Math.Abs(_audioBuffer[i]);
+            }
+
+            return sum / _audioBuffer.Length;
+        }
+
+        private void MascotWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            try
+            {
+                // リップシンクリソースの解放
+                StopLipSync();
+                _audioCapture?.Dispose();
+                _lipSyncTimer?.Stop();
+
+                // 設定保存
+                _settings.WindowLeft = Left;
+                _settings.WindowTop = Top;
+                _settings.Save();
+
+                Console.WriteLine("マスコットウィンドウのリソースを解放しました");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ウィンドウクローズ時のエラー: {ex.Message}");
+            }
+        }
+
         private void InitializeServices()
         {
             _rssService = new RssService(_settings.RssFeeds);
@@ -2045,6 +2324,17 @@ namespace DesktopMascot
             if (_settings.EnableVoiceSynthesis)
             {
                 _voiceVoxService = new VoiceVoxService(_settings.VoiceVoxApiKey);
+
+                // リップシンク制御コールバック設定
+                _voiceVoxService.OnAudioPlayStarted = () => {
+                    Console.WriteLine("音声再生開始 - リップシンク開始");
+                    StartLipSync();
+                };
+                _voiceVoxService.OnAudioPlayEnded = () => {
+                    Console.WriteLine("音声再生終了 - リップシンク停止");
+                    StopLipSync();
+                };
+
                 Console.WriteLine("音声合成サービスを初期化しました");
             }
             
@@ -2127,10 +2417,6 @@ namespace DesktopMascot
 
         private void AnimateMascot()
         {
-            // 瞬き確認のため一時無効化
-            return;
-
-            /*
             var scaleTransform = new ScaleTransform(1.0, 1.0);
             MascotImage.RenderTransform = scaleTransform;
             MascotImage.RenderTransformOrigin = new Point(0.5, 0.5);
@@ -2142,10 +2428,6 @@ namespace DesktopMascot
 
             scaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
             scaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
-            */
-            
-            // スピーチバブルも更新
-            ShowSpeechBubble();
         }
 
         private void StartRssAutoUpdate()
@@ -2403,7 +2685,7 @@ namespace DesktopMascot
                 Console.WriteLine($"使用する話者ID: {_settings.VoiceSpeakerId}");
 
                 var result = await _voiceVoxService.SynthesizeAndPlayAsync(textToRead, _settings.VoiceSpeakerId);
-                
+
                 if (result.IsSuccess)
                 {
                     Console.WriteLine($"音声再生成功: {result.SpeakerName}");
