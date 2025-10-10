@@ -411,11 +411,8 @@ namespace DesktopMascot
 
         public WeatherService()
         {
-            var handler = new HttpClientHandler()
-            {
-                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
-            };
-            
+            var handler = new HttpClientHandler();
+
             _httpClient = new HttpClient(handler);
             _httpClient.Timeout = TimeSpan.FromSeconds(30);
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "DesktopMascot/1.0");
@@ -1680,7 +1677,6 @@ namespace DesktopMascot
         private void OnOpenArticle()
         {
             OpenArticleRequested?.Invoke(this, EventArgs.Empty);
-            Hide();
         }
 
         private void OnReadAloud()
@@ -1755,6 +1751,8 @@ namespace DesktopMascot
         private DispatcherTimer _rssTimer;
         private DispatcherTimer _weatherTimer;
         private DispatcherTimer _blinkTimer;
+        private bool _isRssUpdating = false;
+        private bool _isWeatherUpdating = false;
         private bool _isClickThrough = false;
         private MascotSettings _settings;
 
@@ -1772,7 +1770,6 @@ namespace DesktopMascot
         private DispatcherTimer _lipSyncTimer;
         private bool _isLipSyncActive = false;
         private float[] _audioBuffer;
-        private readonly int _fftLength = 1024;
 
         public MascotWindow()
         {
@@ -2323,18 +2320,7 @@ namespace DesktopMascot
             Console.WriteLine($"設定読み込み完了: VoiceSpeakerId = {_settings.VoiceSpeakerId}, EnableVoiceSynthesis = {_settings.EnableVoiceSynthesis}");
             if (_settings.EnableVoiceSynthesis)
             {
-                _voiceVoxService = new VoiceVoxService(_settings.VoiceVoxApiKey);
-
-                // リップシンク制御コールバック設定
-                _voiceVoxService.OnAudioPlayStarted = () => {
-                    Console.WriteLine("音声再生開始 - リップシンク開始");
-                    StartLipSync();
-                };
-                _voiceVoxService.OnAudioPlayEnded = () => {
-                    Console.WriteLine("音声再生終了 - リップシンク停止");
-                    StopLipSync();
-                };
-
+                _voiceVoxService = CreateVoiceService(_settings.VoiceVoxApiKey);
                 Console.WriteLine("音声合成サービスを初期化しました");
             }
             
@@ -2343,7 +2329,7 @@ namespace DesktopMascot
             _speechBubble.PreviousRequested += OnPreviousRequested;
             _speechBubble.NextRequested += OnNextRequested;
             _speechBubble.ReadAloudRequested += OnReadAloudRequested;
-
+            
             // 初期RSS取得
             _ = UpdateRssAsync();
             
@@ -2362,6 +2348,25 @@ namespace DesktopMascot
                 }
                 Dispatcher.Invoke(() => UpdateWeatherDisplay());
             });
+        }
+
+        private VoiceVoxService CreateVoiceService(string apiKey)
+        {
+            var service = new VoiceVoxService(apiKey);
+
+            // リップシンク制御コールバック設定
+            service.OnAudioPlayStarted = () =>
+            {
+                Console.WriteLine("音声再生開始 - リップシンク開始");
+                StartLipSync();
+            };
+            service.OnAudioPlayEnded = () =>
+            {
+                Console.WriteLine("音声再生終了 - リップシンク停止");
+                StopLipSync();
+            };
+
+            return service;
         }
 
         private void OnLocationChanged(object sender, EventArgs e)
@@ -2446,20 +2451,56 @@ namespace DesktopMascot
 
         private async Task UpdateRssAsync()
         {
-            var success = await _rssService.FetchRssAsync();
-            if (success && _rssService.Articles.Any())
+            if (_isRssUpdating)
             {
-                _currentArticleIndex = 0;
-                AnimateMascot();
+                Console.WriteLine("RSS更新要求をスキップしました（処理中）");
+                return;
+            }
+
+            _isRssUpdating = true;
+            try
+            {
+                var success = await _rssService.FetchRssAsync();
+                if (success && _rssService.Articles.Any())
+                {
+                    _currentArticleIndex = 0;
+                    AnimateMascot();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RSS更新エラー: {ex.Message}");
+            }
+            finally
+            {
+                _isRssUpdating = false;
             }
         }
 
         private async Task UpdateWeatherAsync()
         {
-            var success = await _weatherService.FetchWeatherAsync();
-            if (success)
+            if (_isWeatherUpdating)
             {
-                UpdateWeatherDisplay();
+                Console.WriteLine("天気更新要求をスキップしました（処理中）");
+                return;
+            }
+
+            _isWeatherUpdating = true;
+            try
+            {
+                var success = await _weatherService.FetchWeatherAsync();
+                if (success)
+                {
+                    UpdateWeatherDisplay();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"天気更新エラー: {ex.Message}");
+            }
+            finally
+            {
+                _isWeatherUpdating = false;
             }
         }
 
@@ -2557,7 +2598,7 @@ namespace DesktopMascot
                     if (_speechBubble?.IsReadingAloud != true)
                     {
                         _voiceVoxService?.Dispose();
-                        _voiceVoxService = new VoiceVoxService(_settings.VoiceVoxApiKey);
+                        _voiceVoxService = CreateVoiceService(_settings.VoiceVoxApiKey);
                         Console.WriteLine("音声合成サービスを再初期化しました");
                     }
                     else
