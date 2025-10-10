@@ -2352,6 +2352,7 @@ namespace DesktopMascot
 
         private VoiceVoxService CreateVoiceService(string apiKey)
         {
+            Console.WriteLine("CreateVoiceService: 音声合成サービスを作成中...");
             var service = new VoiceVoxService(apiKey);
 
             // リップシンク制御コールバック設定
@@ -2366,6 +2367,7 @@ namespace DesktopMascot
                 StopLipSync();
             };
 
+            Console.WriteLine("CreateVoiceService: コールバック設定完了");
             return service;
         }
 
@@ -2699,8 +2701,11 @@ namespace DesktopMascot
 
         private async void OnReadAloudRequested(object sender, EventArgs e)
         {
+            Console.WriteLine($"OnReadAloudRequested: 読み上げ要求を受信 - EnableVoiceSynthesis={_settings.EnableVoiceSynthesis}, VoiceVoxService={(_voiceVoxService != null ? "存在" : "null")}, Articles={_rssService.Articles.Count}件");
+
             if (!_settings.EnableVoiceSynthesis || _voiceVoxService == null || !_rssService.Articles.Any())
             {
+                Console.WriteLine("OnReadAloudRequested: 読み上げ条件を満たしていないため終了");
                 return;
             }
 
