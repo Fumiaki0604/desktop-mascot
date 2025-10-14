@@ -32,6 +32,17 @@
     <PackageReference Include="System.Net.Http" Version="4.3.4" />
     <PackageReference Include="System.Xml.XDocument" Version="4.3.0" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="SimpleTest.cs" />
+    <Compile Remove="SimpleTest_EN.cs" />
+    <Compile Remove="TestApp.cs" />
+    <Compile Remove="Program.cs" />
+    <Compile Remove="MainForm.cs" />
+    <Compile Remove="RssTicker.cs" />
+    <Compile Remove="Settings.cs" />
   </ItemGroup>
 
 </Project>
