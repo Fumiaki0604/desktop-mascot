@@ -95,3 +95,40 @@ Settings are stored in JSON at: `%AppData%\DesktopMascot\settings.json`
 - **GIF Animation**: Plays once when navigating between articles (Next/Previous buttons or auto-advance)
 - **No Idle Animation**: GIF does NOT play during idle time, only on article navigation
 - **Fallback**: If GIF file not found, no animation plays (scale animation removed)
+
+## 🚧 実装中の機能: 技術ブログ統合 (Qiita/Zenn)
+
+### 実装済み (Phase 1-3)
+✅ **データモデル拡張**
+- `ArticleSourceType` 列挙型追加 (RSS/TechBlog)
+- `RssArticle` に `SourceType`, `AuthorName`, `Tags` プロパティ追加
+- `TechBlogSettings` クラス作成（Qiita/Zenn設定）
+- `MascotSettings` に `TechBlog` プロパティ追加
+
+✅ **QiitaService実装**
+- タグ検索機能 (デフォルト: C#, WPF, .NET, AI, 機械学習)
+- タイムライン機能 (要アクセストークン)
+- `QiitaItem`, `QiitaUser`, `QiitaTag` モデルクラス
+
+✅ **ZennService実装**
+- RSS経由でユーザー記事取得 (https://zenn.dev/{username}/feed)
+- RSS経由でトピック記事取得 (https://zenn.dev/topics/{topic}/feed)
+- デフォルトトピック: csharp, dotnet, ai, nextjs
+
+### 未実装 (Phase 4-7)
+⏳ **ArticleAggregatorService** - RSS/Qiita/Zennの記事を統合管理
+⏳ **SpeechBubbleWindow拡張** - タブUI追加 (📰 RSS / 💻 技術ブログ)
+⏳ **MascotWindow拡張** - タブ切り替えロジック、記事インデックス管理
+⏳ **SettingsWindow拡張** - 技術ブログ設定タブ追加
+
+### ユーザー情報
+- Qiita: @Fumiaki0604
+- Zenn: fumiaki sato
+
+### 実装設計
+詳細な設計は以下のドキュメントを参照:
+- タブUIは `SpeechBubbleWindow` に追加（📰 RSS / 💻 技術ブログ）
+- 各タブごとに独立した記事インデックスを管理
+- タグ表示は技術ブログタブのみ（最大3つまで表示）
+- 記事取得は非同期並列実行、重複はURLベースで削除
+- 最大30件の記事を保持（RSS + 技術ブログ合計）

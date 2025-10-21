@@ -44,6 +44,15 @@ namespace DesktopMascot
     }
 
     /// <summary>
+    /// 記事のソース種別
+    /// </summary>
+    public enum ArticleSourceType
+    {
+        RSS,           // 従来のRSSフィード
+        TechBlog       // 技術ブログ (Qiita/Zenn)
+    }
+
+    /// <summary>
     /// RSS記事データ
     /// </summary>
     public class RssArticle
@@ -53,9 +62,12 @@ namespace DesktopMascot
         public string Link { get; set; } = "";
         public string PubDate { get; set; } = "";
         public string ThumbnailUrl { get; set; } = "";
-        public string SourceName { get; set; } = "";  // "Gizmodo", "ITmedia"など
+        public string SourceName { get; set; } = "";  // "Gizmodo", "ITmedia", "Qiita", "Zenn"
         public string SourceUrl { get; set; } = "";   // Feed URL
         public DateTime PublishedDate { get; set; }   // 日付ソート用
+        public ArticleSourceType SourceType { get; set; } = ArticleSourceType.RSS;  // ソース種別
+        public string AuthorName { get; set; } = "";  // 著者名 (技術ブログ用)
+        public List<string> Tags { get; set; } = new();  // タグ (技術ブログ用)
     }
 
     /// <summary>
@@ -80,6 +92,23 @@ namespace DesktopMascot
         public DateTime LastUpdate { get; set; }
     }
 
+    /// <summary>
+    /// 技術ブログ設定
+    /// </summary>
+    public class TechBlogSettings
+    {
+        // Qiita設定
+        public bool QiitaEnabled { get; set; } = true;
+        public string QiitaAccessToken { get; set; } = "";
+        public List<string> QiitaTags { get; set; } = new() { "C#", "WPF", ".NET", "AI", "機械学習" };
+        public bool QiitaUseTimeline { get; set; } = false;  // true=タイムライン, false=タグ検索
+
+        // Zenn設定
+        public bool ZennEnabled { get; set; } = true;
+        public string ZennUsername { get; set; } = "";
+        public List<string> ZennTopics { get; set; } = new() { "csharp", "dotnet", "ai", "nextjs" };
+    }
+
 
 
     /// <summary>
@@ -99,6 +128,9 @@ namespace DesktopMascot
         public string VoiceVoxApiKey { get; set; } = "";
         public int VoiceSpeakerId { get; set; } = 61; // デフォルトは話者ID61
         public bool AutoReadArticles { get; set; } = false; // 記事切り替え時の自動読み上げ
+
+        // 技術ブログ設定
+        public TechBlogSettings TechBlog { get; set; } = new();
 
         private static string SettingsPath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -609,6 +641,288 @@ namespace DesktopMascot
                 95 or 96 or 99 => "雷雨",
                 _ => "不明"
             };
+        }
+    }
+
+    /// <summary>
+    /// Qiita記事取得サービス
+    /// </summary>
+    public class QiitaService
+    {
+        private readonly HttpClient _httpClient;
+        private readonly TechBlogSettings _settings;
+
+        public QiitaService(TechBlogSettings settings)
+        {
+            _httpClient = new HttpClient();
+            _settings = settings;
+        }
+
+        public async Task<List<RssArticle>> GetArticlesAsync()
+        {
+            try
+            {
+                if (!_settings.QiitaEnabled)
+                {
+                    Console.WriteLine("[Qiita] Qiitaは無効化されています");
+                    return new List<RssArticle>();
+                }
+
+                if (_settings.QiitaUseTimeline && !string.IsNullOrEmpty(_settings.QiitaAccessToken))
+                {
+                    Console.WriteLine("[Qiita] タイムラインから記事を取得します");
+                    return await GetTimelineAsync();
+                }
+                else
+                {
+                    Console.WriteLine($"[Qiita] タグ検索から記事を取得します: {string.Join(", ", _settings.QiitaTags)}");
+                    return await GetArticlesByTagsAsync(_settings.QiitaTags);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Qiita] エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        private async Task<List<RssArticle>> GetTimelineAsync()
+        {
+            try
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, "https://qiita.com/api/v2/authenticated_user/items?per_page=20");
+                request.Headers.Add("Authorization", $"Bearer {_settings.QiitaAccessToken}");
+
+                var response = await _httpClient.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+
+                var json = await response.Content.ReadAsStringAsync();
+                var items = System.Text.Json.JsonSerializer.Deserialize<List<QiitaItem>>(json);
+
+                return items?.Select(ConvertToRssArticle).ToList() ?? new List<RssArticle>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Qiita] タイムライン取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        private async Task<List<RssArticle>> GetArticlesByTagsAsync(List<string> tags)
+        {
+            var allArticles = new List<RssArticle>();
+
+            foreach (var tag in tags.Take(3))  // API制限考慮で最大3タグ
+            {
+                try
+                {
+                    var encodedTag = Uri.EscapeDataString(tag);
+                    var url = $"https://qiita.com/api/v2/tags/{encodedTag}/items?per_page=10";
+
+                    var response = await _httpClient.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    var json = await response.Content.ReadAsStringAsync();
+                    var items = System.Text.Json.JsonSerializer.Deserialize<List<QiitaItem>>(json);
+
+                    if (items != null)
+                    {
+                        allArticles.AddRange(items.Select(ConvertToRssArticle));
+                        Console.WriteLine($"[Qiita] タグ '{tag}' から {items.Count}件の記事を取得");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Qiita] タグ '{tag}' の取得エラー: {ex.Message}");
+                }
+            }
+
+            // 重複削除、日付ソート
+            return allArticles
+                .DistinctBy(a => a.Link)
+                .OrderByDescending(a => a.PublishedDate)
+                .ToList();
+        }
+
+        private RssArticle ConvertToRssArticle(QiitaItem item)
+        {
+            return new RssArticle
+            {
+                Title = item.title ?? "",
+                Description = item.body?.Length > 200 ? item.body.Substring(0, 200) + "..." : item.body ?? "",
+                Link = item.url ?? "",
+                ThumbnailUrl = "",  // Qiitaは記事サムネイルなし
+                SourceName = "Qiita",
+                SourceUrl = "https://qiita.com",
+                PublishedDate = item.created_at,
+                PubDate = item.created_at.ToString("R"),
+                SourceType = ArticleSourceType.TechBlog,
+                AuthorName = item.user?.id ?? "",
+                Tags = item.tags?.Select(t => t.name ?? "").ToList() ?? new List<string>()
+            };
+        }
+    }
+
+    /// <summary>
+    /// Qiita APIレスポンス用モデル
+    /// </summary>
+    public class QiitaItem
+    {
+        public string title { get; set; } = "";
+        public string body { get; set; } = "";
+        public string url { get; set; } = "";
+        public DateTime created_at { get; set; }
+        public QiitaUser user { get; set; } = new();
+        public List<QiitaTag> tags { get; set; } = new();
+    }
+
+    public class QiitaUser
+    {
+        public string id { get; set; } = "";
+        public string name { get; set; } = "";
+    }
+
+    public class QiitaTag
+    {
+        public string name { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Zenn記事取得サービス
+    /// </summary>
+    public class ZennService
+    {
+        private readonly HttpClient _httpClient;
+        private readonly TechBlogSettings _settings;
+
+        public ZennService(TechBlogSettings settings)
+        {
+            _httpClient = new HttpClient();
+            _settings = settings;
+        }
+
+        public async Task<List<RssArticle>> GetArticlesAsync()
+        {
+            try
+            {
+                if (!_settings.ZennEnabled)
+                {
+                    Console.WriteLine("[Zenn] Zennは無効化されています");
+                    return new List<RssArticle>();
+                }
+
+                var allArticles = new List<RssArticle>();
+
+                // ユーザーの記事を取得（RSS経由）
+                if (!string.IsNullOrEmpty(_settings.ZennUsername))
+                {
+                    Console.WriteLine($"[Zenn] ユーザー '{_settings.ZennUsername}' の記事を取得します");
+                    var userArticles = await GetUserArticlesAsync(_settings.ZennUsername);
+                    allArticles.AddRange(userArticles);
+                }
+
+                // トピック別記事を取得
+                foreach (var topic in _settings.ZennTopics.Take(3))  // 最大3トピック
+                {
+                    Console.WriteLine($"[Zenn] トピック '{topic}' の記事を取得します");
+                    var topicArticles = await GetTopicArticlesAsync(topic);
+                    allArticles.AddRange(topicArticles);
+                }
+
+                // 重複削除、日付ソート
+                return allArticles
+                    .DistinctBy(a => a.Link)
+                    .OrderByDescending(a => a.PublishedDate)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Zenn] エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        private async Task<List<RssArticle>> GetUserArticlesAsync(string username)
+        {
+            try
+            {
+                // Zenn RSSフィード: https://zenn.dev/{username}/feed
+                var url = $"https://zenn.dev/{username}/feed";
+                var response = await _httpClient.GetStringAsync(url);
+
+                return ParseRssFeed(response, $"Zenn (@{username})");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Zenn] ユーザー '{username}' の取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        private async Task<List<RssArticle>> GetTopicArticlesAsync(string topic)
+        {
+            try
+            {
+                // Zenn トピックRSS: https://zenn.dev/topics/{topic}/feed
+                var url = $"https://zenn.dev/topics/{topic}/feed";
+                var response = await _httpClient.GetStringAsync(url);
+
+                return ParseRssFeed(response, $"Zenn (#{topic})");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Zenn] トピック '{topic}' の取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        private List<RssArticle> ParseRssFeed(string rssXml, string sourceName)
+        {
+            var articles = new List<RssArticle>();
+
+            try
+            {
+                var doc = XDocument.Parse(rssXml);
+                var items = doc.Descendants("item").Take(10);  // 最大10件
+
+                foreach (var item in items)
+                {
+                    var title = item.Element("title")?.Value ?? "";
+                    var link = item.Element("link")?.Value ?? "";
+                    var description = item.Element("description")?.Value ?? "";
+                    var pubDateStr = item.Element("pubDate")?.Value ?? "";
+                    var creator = item.Element(XName.Get("creator", "http://purl.org/dc/elements/1.1/"))?.Value ?? "";
+
+                    // pubDateをパース
+                    DateTime.TryParse(pubDateStr, out var pubDate);
+
+                    // タグを抽出（descriptionから簡易的に）
+                    var tags = new List<string>();
+
+                    articles.Add(new RssArticle
+                    {
+                        Title = title,
+                        Description = description.Length > 200 ? description.Substring(0, 200) + "..." : description,
+                        Link = link,
+                        ThumbnailUrl = "",
+                        SourceName = sourceName,
+                        SourceUrl = "https://zenn.dev",
+                        PublishedDate = pubDate,
+                        PubDate = pubDateStr,
+                        SourceType = ArticleSourceType.TechBlog,
+                        AuthorName = creator,
+                        Tags = tags
+                    });
+                }
+
+                Console.WriteLine($"[Zenn] {sourceName} から {articles.Count}件の記事を取得");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Zenn] RSS解析エラー: {ex.Message}");
+            }
+
+            return articles;
         }
     }
 
