@@ -59,9 +59,10 @@ This is a WPF (.NET 8.0-windows) desktop mascot application with advanced featur
 
 #### Animation System
 - **Blinking**: Automatic blinking using `_blink.png` images with dynamic intervals
-- **Hop Animation**: 15-second idle animation with 1.2x scale transformation
+- **GIF Animation**: Article navigation triggers animated GIF playback (1-loop, ~1 second)
 - **Lip Sync**: Real-time mouth movement during voice playback only
 - **Image Management**: Automatic loading of animation images with consistent sizing (150px width)
+- **GIF Library**: Uses WpfAnimatedGif 2.0.2 for smooth GIF animation playback
 
 #### Weather Integration
 - **Location**: Tokyo area weather display at top of mascot window
@@ -72,6 +73,7 @@ This is a WPF (.NET 8.0-windows) desktop mascot application with advanced featur
 - **Base Image**: Main mascot image
 - **Blinking**: `[filename]_blink.png` for eye closing animation
 - **Lip Sync**: `[filename]_mouth1.png`, `[filename]_mouth2.png`, etc. (full body images with different mouth shapes)
+- **GIF Animation**: `rolling_light.gif` (or custom path via `AnimationGifPath` setting) for article navigation animation
 - **Sizing**: All images should maintain consistent aspect ratio, processed at 150px width
 
 ### Configuration
@@ -85,5 +87,11 @@ Settings are stored in JSON at: `%AppData%\DesktopMascot\settings.json`
 
 ### Dependencies
 - **NAudio 2.2.1**: Audio analysis for lip sync
+- **WpfAnimatedGif 2.0.2**: Animated GIF playback for article navigation animation
 - **System.Net.Http 4.3.4**: RSS and API requests
 - **System.Text.Json 8.0.5**: JSON configuration and API parsing
+
+### Animation Triggers
+- **GIF Animation**: Plays once when navigating between articles (Next/Previous buttons or auto-advance)
+- **No Idle Animation**: GIF does NOT play during idle time, only on article navigation
+- **Fallback**: If GIF file not found, no animation plays (scale animation removed)

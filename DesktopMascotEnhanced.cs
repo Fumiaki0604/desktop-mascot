@@ -18,6 +18,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using NAudio.Wave;
 using NAudio.Dsp;
+using WpfAnimatedGif;
 
 namespace DesktopMascot
 {
@@ -87,11 +88,12 @@ namespace DesktopMascot
     public class MascotSettings
     {
         public string ImagePath { get; set; } = "";
+        public string AnimationGifPath { get; set; } = "rolling_light.gif"; // アニメーションGIFのパス
         public string RssUrl { get; set; } = "https://www.gizmodo.jp/index.xml"; // 後方互換性のため残す
         public List<RssFeedConfig> RssFeeds { get; set; } = new();
         public double WindowLeft { get; set; } = 100;
         public double WindowTop { get; set; } = 100;
-        
+
         // 音声合成設定
         public bool EnableVoiceSynthesis { get; set; } = false;
         public string VoiceVoxApiKey { get; set; } = "";
@@ -1747,7 +1749,6 @@ namespace DesktopMascot
         private VoiceVoxService _voiceVoxService;
         private int _currentArticleIndex = 0;
         private SpeechBubbleWindow _speechBubble;
-        private DispatcherTimer _idleTimer;
         private DispatcherTimer _rssTimer;
         private DispatcherTimer _weatherTimer;
         private DispatcherTimer _blinkTimer;
@@ -1764,6 +1765,10 @@ namespace DesktopMascot
         // 口パクアニメーション用
         private List<BitmapImage> _mouthImages = new List<BitmapImage>();
         private int _currentMouthIndex = 0;
+
+        // GIFアニメーション用
+        private string _animationGifPath;
+        private bool _isAnimating = false;
 
         // リップシンク用音声解析
         private WasapiLoopbackCapture _audioCapture;
@@ -1935,6 +1940,9 @@ namespace DesktopMascot
 
                     // 口パク画像の読み込み（同じディレクトリでファイル名に_mouth1, _mouth2...を追加）
                     LoadMouthImages();
+
+                    // アニメーションGIFの読み込み
+                    LoadAnimationGif();
                 }
                 else
                 {
@@ -1943,6 +1951,7 @@ namespace DesktopMascot
                     _normalImage = null;
                     _blinkImage = null;
                     _mouthImages.Clear();
+                    _animationGifPath = null;
                 }
             }
             catch
@@ -1952,6 +1961,7 @@ namespace DesktopMascot
                 _normalImage = null;
                 _blinkImage = null;
                 _mouthImages.Clear();
+                _animationGifPath = null;
             }
         }
 
@@ -2005,6 +2015,60 @@ namespace DesktopMascot
             {
                 Console.WriteLine($"瞬き画像読み込みエラー: {ex.Message}");
                 _blinkImage = null;
+            }
+        }
+
+        private void LoadAnimationGif()
+        {
+            try
+            {
+                // 設定からGIFパスを取得（絶対パスまたは相対パス）
+                var gifPath = _settings.AnimationGifPath;
+                Console.WriteLine($"[GIF] 設定ファイルから取得したパス: {gifPath}");
+
+                // 相対パスの場合、複数の場所を検索
+                if (!Path.IsPathRooted(gifPath))
+                {
+                    // 1. カレントディレクトリ
+                    var currentDirPath = Path.Combine(Directory.GetCurrentDirectory(), gifPath);
+                    Console.WriteLine($"[GIF] カレントディレクトリで検索: {currentDirPath}");
+
+                    // 2. 実行ファイルのディレクトリ
+                    var exeDirectory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    var exeDirPath = Path.Combine(exeDirectory, gifPath);
+                    Console.WriteLine($"[GIF] 実行ディレクトリで検索: {exeDirPath}");
+
+                    // 3. プロジェクトルート（C:\DesktopMascot_Enhanced）
+                    var projectRootPath = Path.Combine(@"C:\DesktopMascot_Enhanced", gifPath);
+                    Console.WriteLine($"[GIF] プロジェクトルートで検索: {projectRootPath}");
+
+                    // 優先順位: カレント → プロジェクトルート → 実行ディレクトリ
+                    if (File.Exists(currentDirPath))
+                        gifPath = currentDirPath;
+                    else if (File.Exists(projectRootPath))
+                        gifPath = projectRootPath;
+                    else if (File.Exists(exeDirPath))
+                        gifPath = exeDirPath;
+                }
+
+                Console.WriteLine($"[GIF] 最終的なパス: {gifPath}");
+
+                if (File.Exists(gifPath))
+                {
+                    // パスを保存（再生時に使用）
+                    _animationGifPath = gifPath;
+                    Console.WriteLine($"[GIF] ✓ アニメーションGIFを読み込みました: {gifPath}");
+                }
+                else
+                {
+                    Console.WriteLine($"[GIF] ✗ アニメーションGIFが見つかりません: {gifPath}");
+                    _animationGifPath = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GIF] ✗ アニメーションGIF読み込みエラー: {ex.Message}");
+                _animationGifPath = null;
             }
         }
 
@@ -2411,30 +2475,73 @@ namespace DesktopMascot
 
         private void StartIdleAnimation()
         {
-            _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
-            _idleTimer.Tick += (s, e) =>
-            {
-                if (!_speechBubble.IsVisible)
-                {
-                    AnimateMascot();
-                }
-            };
-            _idleTimer.Start();
+            // アイドルアニメーションは記事送り時のみ実行するため、ここでは何もしない
+            // 15秒ごとの自動アニメーションは無効化
         }
 
         private void AnimateMascot()
         {
-            var scaleTransform = new ScaleTransform(1.0, 1.0);
-            MascotImage.RenderTransform = scaleTransform;
-            MascotImage.RenderTransformOrigin = new Point(0.5, 0.5);
-
-            var animation = new DoubleAnimation(1.2, 1.0, TimeSpan.FromSeconds(0.5))
+            // GIFアニメーション再生（拡大アニメーションは廃止）
+            if (!string.IsNullOrEmpty(_animationGifPath) && !_isAnimating)
             {
-                AutoReverse = false
-            };
+                PlayGifAnimation();
+            }
+        }
 
-            scaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
-            scaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+        private void PlayGifAnimation()
+        {
+            Console.WriteLine($"[GIF] PlayGifAnimation呼び出し - _isAnimating={_isAnimating}, _animationGifPath={(!string.IsNullOrEmpty(_animationGifPath) ? "有効" : "null")}");
+
+            if (_isAnimating || string.IsNullOrEmpty(_animationGifPath))
+            {
+                Console.WriteLine($"[GIF] アニメーション中断: _isAnimating={_isAnimating}, _animationGifPath={(!string.IsNullOrEmpty(_animationGifPath) ? "有効" : "null")}");
+                return;
+            }
+
+            _isAnimating = true;
+            Console.WriteLine("[GIF] アニメーション開始");
+
+            // 元の画像を保存（瞬き中でなければ現在の画像、瞬き中なら_normalImage）
+            var originalImage = MascotImage.Source == _blinkImage ? _normalImage : MascotImage.Source;
+
+            try
+            {
+                // WpfAnimatedGifを使用してGIFアニメーションを設定
+                var gifImage = new BitmapImage();
+                gifImage.BeginInit();
+                gifImage.UriSource = new Uri(_animationGifPath);
+                gifImage.EndInit();
+
+                // ImageBehavior.AnimatedSourceでGIFアニメーションを有効化
+                ImageBehavior.SetAnimatedSource(MascotImage, gifImage);
+
+                // RepeatBehaviorを1回に設定（1ループのみ再生）
+                ImageBehavior.SetRepeatBehavior(MascotImage, new RepeatBehavior(1));
+
+                Console.WriteLine("[GIF] GIF画像に切り替え完了");
+
+                // アニメーション完了時のイベントハンドラを設定
+                void OnAnimationCompleted(object sender, EventArgs e)
+                {
+                    Console.WriteLine("[GIF] アニメーション完了");
+
+                    // イベントハンドラを解除
+                    ImageBehavior.RemoveAnimationCompletedHandler(MascotImage, OnAnimationCompleted);
+
+                    // 元の画像に戻す
+                    ImageBehavior.SetAnimatedSource(MascotImage, null);
+                    MascotImage.Source = originalImage;
+                    _isAnimating = false;
+                    Console.WriteLine("[GIF] 元の画像に戻しました");
+                }
+
+                ImageBehavior.AddAnimationCompletedHandler(MascotImage, OnAnimationCompleted);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GIF] エラー: {ex.Message}");
+                _isAnimating = false;
+            }
         }
 
         private void StartRssAutoUpdate()
