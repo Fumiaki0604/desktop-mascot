@@ -927,6 +927,116 @@ namespace DesktopMascot
     }
 
     /// <summary>
+    /// 記事統合管理サービス（RSS + Qiita + Zenn）
+    /// </summary>
+    public class ArticleAggregatorService
+    {
+        private readonly RssService _rssService;
+        private readonly QiitaService _qiitaService;
+        private readonly ZennService _zennService;
+        private readonly MascotSettings _settings;
+
+        public ArticleAggregatorService(MascotSettings settings)
+        {
+            _settings = settings;
+            _rssService = new RssService(settings.RssFeeds);
+            _qiitaService = new QiitaService(settings.TechBlog);
+            _zennService = new ZennService(settings.TechBlog);
+        }
+
+        /// <summary>
+        /// RSS記事のみを取得
+        /// </summary>
+        public async Task<List<RssArticle>> GetRssArticlesAsync()
+        {
+            try
+            {
+                Console.WriteLine("[ArticleAggregator] RSS記事を取得中...");
+                var success = await _rssService.FetchRssAsync();
+                var articles = success ? _rssService.Articles : new List<RssArticle>();
+                Console.WriteLine($"[ArticleAggregator] RSS記事 {articles.Count}件を取得");
+                return articles;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ArticleAggregator] RSS記事取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        /// <summary>
+        /// 技術ブログ記事のみを取得（Qiita + Zenn）
+        /// </summary>
+        public async Task<List<RssArticle>> GetTechBlogArticlesAsync()
+        {
+            try
+            {
+                Console.WriteLine("[ArticleAggregator] 技術ブログ記事を取得中...");
+
+                // Qiita、Zennを並列実行
+                var qiitaTask = _qiitaService.GetArticlesAsync();
+                var zennTask = _zennService.GetArticlesAsync();
+
+                await Task.WhenAll(qiitaTask, zennTask);
+
+                var allArticles = new List<RssArticle>();
+                allArticles.AddRange(qiitaTask.Result);
+                allArticles.AddRange(zennTask.Result);
+
+                // 重複削除（URLベース）、日付ソート
+                var uniqueArticles = allArticles
+                    .DistinctBy(a => a.Link)
+                    .OrderByDescending(a => a.PublishedDate)
+                    .ToList();
+
+                Console.WriteLine($"[ArticleAggregator] 技術ブログ記事 {uniqueArticles.Count}件を取得 (Qiita: {qiitaTask.Result.Count}, Zenn: {zennTask.Result.Count})");
+                return uniqueArticles;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ArticleAggregator] 技術ブログ記事取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+
+        /// <summary>
+        /// すべての記事を取得（RSS + 技術ブログ）
+        /// </summary>
+        public async Task<List<RssArticle>> GetAllArticlesAsync()
+        {
+            try
+            {
+                Console.WriteLine("[ArticleAggregator] 全記事を取得中...");
+
+                // RSS、技術ブログを並列実行
+                var rssTask = GetRssArticlesAsync();
+                var techBlogTask = GetTechBlogArticlesAsync();
+
+                await Task.WhenAll(rssTask, techBlogTask);
+
+                var allArticles = new List<RssArticle>();
+                allArticles.AddRange(rssTask.Result);
+                allArticles.AddRange(techBlogTask.Result);
+
+                // 重複削除、日付ソート、最大30件に制限
+                var uniqueArticles = allArticles
+                    .DistinctBy(a => a.Link)
+                    .OrderByDescending(a => a.PublishedDate)
+                    .Take(30)
+                    .ToList();
+
+                Console.WriteLine($"[ArticleAggregator] 全記事 {uniqueArticles.Count}件を取得 (RSS: {rssTask.Result.Count}, 技術ブログ: {techBlogTask.Result.Count})");
+                return uniqueArticles;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ArticleAggregator] 全記事取得エラー: {ex.Message}");
+                return new List<RssArticle>();
+            }
+        }
+    }
+
+    /// <summary>
     /// VOICEVOX音声合成サービス
     /// </summary>
     public class VoiceVoxService : IDisposable
@@ -1279,18 +1389,28 @@ namespace DesktopMascot
             {
                 ImagePath = currentSettings.ImagePath,
                 RssUrl = currentSettings.RssUrl,
-                RssFeeds = new List<RssFeedConfig>(currentSettings.RssFeeds.Select(f => new RssFeedConfig 
-                { 
-                    Name = f.Name, 
-                    Url = f.Url, 
-                    IsEnabled = f.IsEnabled 
+                RssFeeds = new List<RssFeedConfig>(currentSettings.RssFeeds.Select(f => new RssFeedConfig
+                {
+                    Name = f.Name,
+                    Url = f.Url,
+                    IsEnabled = f.IsEnabled
                 })),
                 WindowLeft = currentSettings.WindowLeft,
                 WindowTop = currentSettings.WindowTop,
                 EnableVoiceSynthesis = currentSettings.EnableVoiceSynthesis,
                 VoiceVoxApiKey = currentSettings.VoiceVoxApiKey,
                 VoiceSpeakerId = currentSettings.VoiceSpeakerId,
-                AutoReadArticles = currentSettings.AutoReadArticles
+                AutoReadArticles = currentSettings.AutoReadArticles,
+                TechBlog = new TechBlogSettings
+                {
+                    QiitaEnabled = currentSettings.TechBlog.QiitaEnabled,
+                    QiitaAccessToken = currentSettings.TechBlog.QiitaAccessToken,
+                    QiitaTags = new List<string>(currentSettings.TechBlog.QiitaTags),
+                    QiitaUseTimeline = currentSettings.TechBlog.QiitaUseTimeline,
+                    ZennEnabled = currentSettings.TechBlog.ZennEnabled,
+                    ZennUsername = currentSettings.TechBlog.ZennUsername,
+                    ZennTopics = new List<string>(currentSettings.TechBlog.ZennTopics)
+                }
             };
 
             InitializeComponent();
@@ -1430,10 +1550,77 @@ namespace DesktopMascot
             voiceGrid.Children.Add(speakerPanel);
             voiceGrid.Children.Add(AutoReadCheckBox);
 
+            // 技術ブログ設定タブ
+            var techBlogTab = new TabItem { Header = "技術ブログ" };
+            var techBlogScrollViewer = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            var techBlogGrid = new Grid { Margin = new Thickness(20) };
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Qiita
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Zenn
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            techBlogScrollViewer.Content = techBlogGrid;
+            techBlogTab.Content = techBlogScrollViewer;
+
+            // Qiita設定
+            var qiitaHeader = new Label { Content = "Qiita 設定", FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 0, 0, 10) };
+            Grid.SetRow(qiitaHeader, 0);
+
+            QiitaEnabledCheckBox = new CheckBox { Content = "Qiita記事を取得する", Margin = new Thickness(0, 0, 0, 10) };
+            Grid.SetRow(QiitaEnabledCheckBox, 1);
+
+            var qiitaTagsLabel = new Label { Content = "検索タグ (カンマ区切り):", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(qiitaTagsLabel, 2);
+
+            QiitaTagsTextBox = new TextBox { Width = 350, Margin = new Thickness(0, 0, 0, 10), HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetRow(QiitaTagsTextBox, 3);
+
+            var qiitaTokenLabel = new Label { Content = "アクセストークン (オプション・タイムライン用):", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(qiitaTokenLabel, 4);
+
+            QiitaAccessTokenTextBox = new TextBox { Width = 350, Margin = new Thickness(0, 0, 0, 20), HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetRow(QiitaAccessTokenTextBox, 4);
+
+            // Zenn設定
+            var zennHeader = new Label { Content = "Zenn 設定", FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 10, 0, 10) };
+            Grid.SetRow(zennHeader, 5);
+
+            ZennEnabledCheckBox = new CheckBox { Content = "Zenn記事を取得する", Margin = new Thickness(0, 0, 0, 10) };
+            Grid.SetRow(ZennEnabledCheckBox, 6);
+
+            var zennUsernameLabel = new Label { Content = "ユーザー名 (オプション):", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(zennUsernameLabel, 7);
+
+            ZennUsernameTextBox = new TextBox { Width = 350, Margin = new Thickness(0, 0, 0, 10), HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetRow(ZennUsernameTextBox, 7);
+
+            var zennTopicsLabel = new Label { Content = "トピック (カンマ区切り):", Margin = new Thickness(0, 0, 0, 5) };
+            Grid.SetRow(zennTopicsLabel, 8);
+
+            ZennTopicsTextBox = new TextBox { Width = 350, Margin = new Thickness(0, 0, 0, 10), HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetRow(ZennTopicsTextBox, 8);
+
+            techBlogGrid.Children.Add(qiitaHeader);
+            techBlogGrid.Children.Add(QiitaEnabledCheckBox);
+            techBlogGrid.Children.Add(qiitaTagsLabel);
+            techBlogGrid.Children.Add(QiitaTagsTextBox);
+            techBlogGrid.Children.Add(qiitaTokenLabel);
+            techBlogGrid.Children.Add(QiitaAccessTokenTextBox);
+            techBlogGrid.Children.Add(zennHeader);
+            techBlogGrid.Children.Add(ZennEnabledCheckBox);
+            techBlogGrid.Children.Add(zennUsernameLabel);
+            techBlogGrid.Children.Add(ZennUsernameTextBox);
+            techBlogGrid.Children.Add(zennTopicsLabel);
+            techBlogGrid.Children.Add(ZennTopicsTextBox);
+
             // タブをTabControlに追加
             tabControl.Items.Add(basicTab);
             tabControl.Items.Add(voiceTab);
             tabControl.Items.Add(feedTab);
+            tabControl.Items.Add(techBlogTab);
 
             Grid.SetRow(tabControl, 0);
 
@@ -1462,23 +1649,39 @@ namespace DesktopMascot
 
         public TextBox ImagePathTextBox { get; private set; }
         public ListBox FeedListBox { get; private set; }
-        
+
         // 音声合成設定UI要素
         public CheckBox EnableVoiceCheckBox { get; private set; }
         public TextBox VoiceApiKeyTextBox { get; private set; }
         public ComboBox SpeakerComboBox { get; private set; }
         public CheckBox AutoReadCheckBox { get; private set; }
 
+        // 技術ブログ設定UI要素
+        public CheckBox QiitaEnabledCheckBox { get; private set; }
+        public TextBox QiitaTagsTextBox { get; private set; }
+        public TextBox QiitaAccessTokenTextBox { get; private set; }
+        public CheckBox ZennEnabledCheckBox { get; private set; }
+        public TextBox ZennUsernameTextBox { get; private set; }
+        public TextBox ZennTopicsTextBox { get; private set; }
+
         private async void LoadCurrentSettings()
         {
             ImagePathTextBox.Text = Settings.ImagePath;
             RefreshFeedList();
-            
+
             // 音声合成設定の読み込み
             EnableVoiceCheckBox.IsChecked = Settings.EnableVoiceSynthesis;
             VoiceApiKeyTextBox.Text = Settings.VoiceVoxApiKey;
             AutoReadCheckBox.IsChecked = Settings.AutoReadArticles;
-            
+
+            // 技術ブログ設定の読み込み
+            QiitaEnabledCheckBox.IsChecked = Settings.TechBlog.QiitaEnabled;
+            QiitaTagsTextBox.Text = string.Join(", ", Settings.TechBlog.QiitaTags);
+            QiitaAccessTokenTextBox.Text = Settings.TechBlog.QiitaAccessToken;
+            ZennEnabledCheckBox.IsChecked = Settings.TechBlog.ZennEnabled;
+            ZennUsernameTextBox.Text = Settings.TechBlog.ZennUsername;
+            ZennTopicsTextBox.Text = string.Join(", ", Settings.TechBlog.ZennTopics);
+
             // スピーカー一覧を取得して設定
             await LoadSpeakersAsync();
         }
@@ -1556,18 +1759,33 @@ namespace DesktopMascot
         private void OK_Click(object sender, RoutedEventArgs e)
         {
             Settings.ImagePath = ImagePathTextBox.Text;
-            
+
             // 音声合成設定の保存
             Settings.EnableVoiceSynthesis = EnableVoiceCheckBox.IsChecked ?? false;
             Settings.VoiceVoxApiKey = VoiceApiKeyTextBox.Text.Trim();
             Settings.AutoReadArticles = AutoReadCheckBox.IsChecked ?? false;
-            
+
             if (SpeakerComboBox.SelectedItem is ComboBoxItem selectedSpeaker)
             {
                 Settings.VoiceSpeakerId = (int)(selectedSpeaker.Tag ?? 61);
                 Console.WriteLine($"設定画面で話者IDを保存: {Settings.VoiceSpeakerId}");
             }
-            
+
+            // 技術ブログ設定の保存
+            Settings.TechBlog.QiitaEnabled = QiitaEnabledCheckBox.IsChecked ?? false;
+            Settings.TechBlog.QiitaAccessToken = QiitaAccessTokenTextBox.Text.Trim();
+            Settings.TechBlog.QiitaTags = QiitaTagsTextBox.Text.Split(',')
+                .Select(t => t.Trim())
+                .Where(t => !string.IsNullOrEmpty(t))
+                .ToList();
+
+            Settings.TechBlog.ZennEnabled = ZennEnabledCheckBox.IsChecked ?? false;
+            Settings.TechBlog.ZennUsername = ZennUsernameTextBox.Text.Trim();
+            Settings.TechBlog.ZennTopics = ZennTopicsTextBox.Text.Split(',')
+                .Select(t => t.Trim())
+                .Where(t => !string.IsNullOrEmpty(t))
+                .ToList();
+
             SettingsChanged = true;
             DialogResult = true;
         }
@@ -1778,6 +1996,12 @@ namespace DesktopMascot
         public bool IsReadingAloud { get; set; } = false; // 読み上げ中フラグ
         private DispatcherTimer _autoAdvanceTimer;
 
+        // タブ関連
+        public int CurrentTabIndex { get; set; } = 0; // 0: RSS, 1: 技術ブログ
+        private Button RssTabButton;
+        private Button TechBlogTabButton;
+        private StackPanel TagsPanel; // タグ表示用パネル
+
         public SpeechBubbleWindow()
         {
             InitializeComponent();
@@ -1841,6 +2065,40 @@ namespace DesktopMascot
 
             var stackPanel = new StackPanel { Margin = new Thickness(15) };
 
+            // タブ切り替えパネル
+            var tabPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+
+            RssTabButton = new Button
+            {
+                Content = "📰 RSS",
+                Padding = new Thickness(12, 4, 12, 4),
+                FontSize = 10,
+                Margin = new Thickness(0, 0, 5, 0),
+                Background = new SolidColorBrush(Color.FromArgb(255, 144, 238, 144)), // 蛍光緑（選択状態）
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 100, 100, 100)),
+                BorderThickness = new Thickness(1)
+            };
+
+            TechBlogTabButton = new Button
+            {
+                Content = "💻 技術ブログ",
+                Padding = new Thickness(12, 4, 12, 4),
+                FontSize = 10,
+                Background = Brushes.White,
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 100, 100, 100)),
+                BorderThickness = new Thickness(1)
+            };
+
+            RssTabButton.Click += (s, e) => TabChanged?.Invoke(this, 0);
+            TechBlogTabButton.Click += (s, e) => TabChanged?.Invoke(this, 1);
+
+            tabPanel.Children.Add(RssTabButton);
+            tabPanel.Children.Add(TechBlogTabButton);
+
             // ヘッダー（タイトル + ナビゲーション）
             var headerPanel = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
 
@@ -1898,7 +2156,7 @@ namespace DesktopMascot
             };
             DockPanel.SetDock(ThumbnailImage, Dock.Left);
 
-            // 記事内容（右側）
+            // 記事内容（右側）- ScrollViewer でラップ
             ContentBlock = new TextBlock
             {
                 FontSize = 12,  // 10→12（+2）
@@ -1906,8 +2164,15 @@ namespace DesktopMascot
                 VerticalAlignment = VerticalAlignment.Top
             };
 
+            var contentScrollViewer = new ScrollViewer
+            {
+                MaxHeight = 120,  // スクロールエリアの最大高さ
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = ContentBlock
+            };
+
             contentArea.Children.Add(ThumbnailImage);
-            contentArea.Children.Add(ContentBlock);
+            contentArea.Children.Add(contentScrollViewer);
 
             // ボタンパネル
             var buttonPanel = new StackPanel
@@ -1955,6 +2220,14 @@ namespace DesktopMascot
             buttonPanel.Children.Add(openButton);
             buttonPanel.Children.Add(closeButton);
 
+            // タグ表示パネル（技術ブログタブのみ表示）
+            TagsPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 8),
+                Visibility = Visibility.Collapsed // デフォルトは非表示（RSSタブ）
+            };
+
             // 出典元表示パネル（右下）
             var sourcePanel = new StackPanel
             {
@@ -1965,7 +2238,9 @@ namespace DesktopMascot
 
             sourcePanel.Children.Add(SourceLabel);
 
+            stackPanel.Children.Add(tabPanel);
             stackPanel.Children.Add(headerPanel);
+            stackPanel.Children.Add(TagsPanel);
             stackPanel.Children.Add(contentArea);
             stackPanel.Children.Add(buttonPanel);
             stackPanel.Children.Add(sourcePanel);
@@ -1989,6 +2264,7 @@ namespace DesktopMascot
         public event EventHandler PreviousRequested;
         public event EventHandler NextRequested;
         public event EventHandler ReadAloudRequested;
+        public event EventHandler<int> TabChanged; // タブ切り替えイベント (0: RSS, 1: 技術ブログ)
 
         private void OnOpenArticle()
         {
@@ -2000,15 +2276,19 @@ namespace DesktopMascot
             ReadAloudRequested?.Invoke(this, EventArgs.Empty);
         }
 
-        public void ShowBubble(Point position, string title, string content, string thumbnailUrl, int currentIndex, int totalCount, string sourceName = "")
+        public void ShowBubble(Point position, string title, string content, string thumbnailUrl, int currentIndex, int totalCount, string sourceName = "", List<string> tags = null)
         {
             CurrentArticleIndex = currentIndex;
             TotalArticles = totalCount;
 
             TitleBlock.Text = title.Length > 60 ? title.Substring(0, 60) + "..." : title;
-            ContentBlock.Text = content.Length > 300 ? content.Substring(0, 300) + "..." : content;
+            // ScrollViewer を使用しているため、文字数制限を削除して全文表示
+            ContentBlock.Text = content;
             CounterLabel.Content = $"{currentIndex + 1}/{totalCount}";
             SourceLabel.Text = !string.IsNullOrEmpty(sourceName) ? $"出典: {sourceName}" : "";
+
+            // タグ表示（技術ブログタブの場合のみ）
+            UpdateTags(tags);
 
             // サムネイル画像の設定
             if (!string.IsNullOrEmpty(thumbnailUrl))
@@ -2036,6 +2316,78 @@ namespace DesktopMascot
             StartAutoAdvanceTimer();
         }
 
+        /// <summary>
+        /// タブを切り替える
+        /// </summary>
+        public void SwitchTab(int tabIndex)
+        {
+            CurrentTabIndex = tabIndex;
+
+            // タブボタンの見た目を更新（蛍光緑で選択状態を表示）
+            if (tabIndex == 0) // RSS
+            {
+                RssTabButton.Background = new SolidColorBrush(Color.FromArgb(255, 144, 238, 144)); // 蛍光緑
+                TechBlogTabButton.Background = Brushes.White;
+                TagsPanel.Visibility = Visibility.Collapsed;
+            }
+            else // 技術ブログ
+            {
+                RssTabButton.Background = Brushes.White;
+                TechBlogTabButton.Background = new SolidColorBrush(Color.FromArgb(255, 144, 238, 144)); // 蛍光緑
+                TagsPanel.Visibility = Visibility.Visible;
+            }
+        }
+
+        /// <summary>
+        /// タグ表示を更新（最大3つまで）
+        /// </summary>
+        private void UpdateTags(List<string> tags)
+        {
+            TagsPanel.Children.Clear();
+
+            if (CurrentTabIndex == 1 && tags != null && tags.Any())
+            {
+                TagsPanel.Visibility = Visibility.Visible;
+
+                var tagLabel = new TextBlock
+                {
+                    Text = "タグ: ",
+                    FontSize = 9,
+                    Foreground = Brushes.Gray,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 5, 0)
+                };
+                TagsPanel.Children.Add(tagLabel);
+
+                foreach (var tag in tags.Take(3))
+                {
+                    var tagBorder = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromArgb(255, 220, 240, 255)),
+                        BorderBrush = new SolidColorBrush(Color.FromArgb(255, 100, 150, 200)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(3),
+                        Padding = new Thickness(6, 2, 6, 2),
+                        Margin = new Thickness(0, 0, 5, 0)
+                    };
+
+                    var tagText = new TextBlock
+                    {
+                        Text = tag,
+                        FontSize = 9,
+                        Foreground = new SolidColorBrush(Color.FromArgb(255, 50, 100, 150))
+                    };
+
+                    tagBorder.Child = tagText;
+                    TagsPanel.Children.Add(tagBorder);
+                }
+            }
+            else
+            {
+                TagsPanel.Visibility = Visibility.Collapsed;
+            }
+        }
+
         public void StartAutoAdvanceTimer()
         {
             _autoAdvanceTimer?.Stop();
@@ -2061,7 +2413,7 @@ namespace DesktopMascot
         private RssService _rssService;
         private WeatherService _weatherService;
         private VoiceVoxService _voiceVoxService;
-        private int _currentArticleIndex = 0;
+        private ArticleAggregatorService _articleAggregator;
         private SpeechBubbleWindow _speechBubble;
         private DispatcherTimer _rssTimer;
         private DispatcherTimer _weatherTimer;
@@ -2070,6 +2422,13 @@ namespace DesktopMascot
         private bool _isWeatherUpdating = false;
         private bool _isClickThrough = false;
         private MascotSettings _settings;
+
+        // タブ別の記事管理
+        private List<RssArticle> _rssArticles = new List<RssArticle>();
+        private List<RssArticle> _techBlogArticles = new List<RssArticle>();
+        private int _currentRssIndex = 0;
+        private int _currentTechBlogIndex = 0;
+        private int _currentTabIndex = 0; // 0: RSS, 1: 技術ブログ
 
         // 瞬きアニメーション用
         private BitmapImage _normalImage;
@@ -2693,7 +3052,8 @@ namespace DesktopMascot
         {
             _rssService = new RssService(_settings.RssFeeds);
             _weatherService = new WeatherService();
-            
+            _articleAggregator = new ArticleAggregatorService(_settings);
+
             // 音声合成サービス初期化
             Console.WriteLine($"設定読み込み完了: VoiceSpeakerId = {_settings.VoiceSpeakerId}, EnableVoiceSynthesis = {_settings.EnableVoiceSynthesis}");
             if (_settings.EnableVoiceSynthesis)
@@ -2701,12 +3061,13 @@ namespace DesktopMascot
                 _voiceVoxService = CreateVoiceService(_settings.VoiceVoxApiKey);
                 Console.WriteLine("音声合成サービスを初期化しました");
             }
-            
+
             _speechBubble = new SpeechBubbleWindow();
             _speechBubble.OpenArticleRequested += OnOpenArticleRequested;
             _speechBubble.PreviousRequested += OnPreviousRequested;
             _speechBubble.NextRequested += OnNextRequested;
             _speechBubble.ReadAloudRequested += OnReadAloudRequested;
+            _speechBubble.TabChanged += OnTabChanged;
             
             // 初期RSS取得
             _ = UpdateRssAsync();
@@ -2883,10 +3244,24 @@ namespace DesktopMascot
             _isRssUpdating = true;
             try
             {
-                var success = await _rssService.FetchRssAsync();
-                if (success && _rssService.Articles.Any())
+                // RSS記事と技術ブログ記事を並列取得
+                var rssTask = _articleAggregator.GetRssArticlesAsync();
+                var techBlogTask = _articleAggregator.GetTechBlogArticlesAsync();
+
+                await Task.WhenAll(rssTask, techBlogTask);
+
+                _rssArticles = rssTask.Result;
+                _techBlogArticles = techBlogTask.Result;
+
+                Console.WriteLine($"記事取得完了: RSS {_rssArticles.Count}件, 技術ブログ {_techBlogArticles.Count}件");
+
+                // インデックスをリセット
+                _currentRssIndex = 0;
+                _currentTechBlogIndex = 0;
+
+                // 記事があればアニメーション
+                if (_rssArticles.Any() || _techBlogArticles.Any())
                 {
-                    _currentArticleIndex = 0;
                     AnimateMascot();
                 }
             }
@@ -3063,20 +3438,56 @@ namespace DesktopMascot
 
         private void ShowSpeechBubble()
         {
-            if (!_rssService.Articles.Any())
+            var currentArticles = GetCurrentTabArticles();
+            var currentIndex = GetCurrentTabIndex();
+
+            if (!currentArticles.Any())
             {
                 var position = GetBubblePosition();
                 _speechBubble.ShowBubble(position, "記事がありません", "RSS更新を実行してください。", "", 0, 0, "");
                 return;
             }
 
-            var article = _rssService.Articles[_currentArticleIndex];
+            var article = currentArticles[currentIndex];
             var bubblePosition = GetBubblePosition();
-            
+
             var title = article.Title;
             var description = article.Description;
-            
-            _speechBubble.ShowBubble(bubblePosition, title, description, article.ThumbnailUrl, _currentArticleIndex, _rssService.Articles.Count, article.SourceName);
+
+            // タブの状態を反映
+            _speechBubble.SwitchTab(_currentTabIndex);
+            _speechBubble.ShowBubble(bubblePosition, title, description, article.ThumbnailUrl, currentIndex, currentArticles.Count, article.SourceName, article.Tags);
+        }
+
+        /// <summary>
+        /// 現在のタブの記事リストを取得
+        /// </summary>
+        private List<RssArticle> GetCurrentTabArticles()
+        {
+            return _currentTabIndex == 0 ? _rssArticles : _techBlogArticles;
+        }
+
+        /// <summary>
+        /// 現在のタブの記事インデックスを取得
+        /// </summary>
+        private int GetCurrentTabIndex()
+        {
+            return _currentTabIndex == 0 ? _currentRssIndex : _currentTechBlogIndex;
+        }
+
+        /// <summary>
+        /// 現在のタブの記事インデックスを設定
+        /// </summary>
+        private void SetCurrentTabIndex(int index)
+        {
+            if (_currentTabIndex == 0)
+            {
+                _currentRssIndex = index;
+            }
+            else
+            {
+                _currentTechBlogIndex = index;
+            }
         }
 
         private Point GetBubblePosition()
@@ -3092,14 +3503,16 @@ namespace DesktopMascot
 
         private void OnPreviousRequested(object sender, EventArgs e)
         {
-            if (_rssService.Articles.Any())
+            var currentArticles = GetCurrentTabArticles();
+            if (currentArticles.Any())
             {
-                // ループ機能付き前の記事へ
-                _currentArticleIndex--;
-                if (_currentArticleIndex < 0)
+                var currentIndex = GetCurrentTabIndex();
+                currentIndex--;
+                if (currentIndex < 0)
                 {
-                    _currentArticleIndex = _rssService.Articles.Count - 1;
+                    currentIndex = currentArticles.Count - 1;
                 }
+                SetCurrentTabIndex(currentIndex);
                 ShowSpeechBubble();
                 AnimateMascot();
             }
@@ -3107,24 +3520,39 @@ namespace DesktopMascot
 
         private void OnNextRequested(object sender, EventArgs e)
         {
-            if (_rssService.Articles.Any())
+            var currentArticles = GetCurrentTabArticles();
+            if (currentArticles.Any())
             {
-                // ループ機能付き次の記事へ
-                _currentArticleIndex++;
-                if (_currentArticleIndex >= _rssService.Articles.Count)
+                var currentIndex = GetCurrentTabIndex();
+                currentIndex++;
+                if (currentIndex >= currentArticles.Count)
                 {
-                    _currentArticleIndex = 0;
+                    currentIndex = 0;
                 }
+                SetCurrentTabIndex(currentIndex);
                 ShowSpeechBubble();
                 AnimateMascot();
             }
         }
 
+        /// <summary>
+        /// タブ切り替えイベントハンドラ
+        /// </summary>
+        private void OnTabChanged(object sender, int tabIndex)
+        {
+            Console.WriteLine($"タブ切り替え: {tabIndex} ({(tabIndex == 0 ? "RSS" : "技術ブログ")})");
+            _currentTabIndex = tabIndex;
+            ShowSpeechBubble();
+        }
+
         private async void OnReadAloudRequested(object sender, EventArgs e)
         {
-            Console.WriteLine($"OnReadAloudRequested: 読み上げ要求を受信 - EnableVoiceSynthesis={_settings.EnableVoiceSynthesis}, VoiceVoxService={(_voiceVoxService != null ? "存在" : "null")}, Articles={_rssService.Articles.Count}件");
+            var currentArticles = GetCurrentTabArticles();
+            var currentIndex = GetCurrentTabIndex();
 
-            if (!_settings.EnableVoiceSynthesis || _voiceVoxService == null || !_rssService.Articles.Any())
+            Console.WriteLine($"OnReadAloudRequested: 読み上げ要求を受信 - EnableVoiceSynthesis={_settings.EnableVoiceSynthesis}, VoiceVoxService={(_voiceVoxService != null ? "存在" : "null")}, Articles={currentArticles.Count}件");
+
+            if (!_settings.EnableVoiceSynthesis || _voiceVoxService == null || !currentArticles.Any())
             {
                 Console.WriteLine("OnReadAloudRequested: 読み上げ条件を満たしていないため終了");
                 return;
@@ -3138,10 +3566,10 @@ namespace DesktopMascot
 
                 // 瞬きタイマーを更新（読み上げ中は頻繁に）
                 ResetBlinkTimer();
-                
-                var article = _rssService.Articles[_currentArticleIndex];
+
+                var article = currentArticles[currentIndex];
                 var textToRead = $"{article.Title}。{article.Description}";
-                
+
                 // 長いテキストは制限（VOICEVOX APIの制限に配慮）
                 if (textToRead.Length > 300)
                 {
@@ -3187,9 +3615,12 @@ namespace DesktopMascot
 
         private void OnOpenArticleRequested(object sender, EventArgs e)
         {
-            if (_rssService.Articles.Any())
+            var currentArticles = GetCurrentTabArticles();
+            var currentIndex = GetCurrentTabIndex();
+
+            if (currentArticles.Any())
             {
-                var article = _rssService.Articles[_currentArticleIndex];
+                var article = currentArticles[currentIndex];
                 if (!string.IsNullOrEmpty(article.Link))
                 {
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
