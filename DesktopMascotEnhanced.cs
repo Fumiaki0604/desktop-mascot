@@ -124,8 +124,8 @@ namespace DesktopMascot
         public double WindowTop { get; set; } = 100;
 
         // 音声合成設定
-        public bool EnableVoiceSynthesis { get; set; } = false;
-        public string VoiceVoxApiKey { get; set; } = "";
+        public bool EnableVoiceSynthesis { get; set; } = true; // デフォルトでON
+        public string VoiceVoxApiKey { get; set; } = "p-s205e-L706841"; // デフォルトAPIキー
         public int VoiceSpeakerId { get; set; } = 61; // デフォルトは話者ID61
         public bool AutoReadArticles { get; set; } = false; // 記事切り替え時の自動読み上げ
 
@@ -165,6 +165,16 @@ namespace DesktopMascot
                     var json = File.ReadAllText(SettingsPath);
                     var settings = System.Text.Json.JsonSerializer.Deserialize<MascotSettings>(json) ?? new MascotSettings();
                     settings.InitializeDefaultFeeds();
+
+                    // VoiceVox APIキーが空の場合、デフォルト値を設定（初回のみ）
+                    if (string.IsNullOrWhiteSpace(settings.VoiceVoxApiKey))
+                    {
+                        settings.VoiceVoxApiKey = "p-s205e-L706841";
+                        settings.EnableVoiceSynthesis = true;
+                        // 非同期で保存（UIブロックを防ぐ）
+                        System.Threading.Tasks.Task.Run(() => settings.Save());
+                    }
+
                     return settings;
                 }
             }
@@ -2013,17 +2023,17 @@ namespace DesktopMascot
             _autoAdvanceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
             _autoAdvanceTimer.Tick += (s, e) =>
             {
-                Console.WriteLine($"自動送りタイマー発火: IsReadingAloud = {IsReadingAloud}");
+                // Console.WriteLine($"自動送りタイマー発火: IsReadingAloud = {IsReadingAloud}"); // 軽量化のためコメントアウト
                 // 読み上げ中は自動送りをスキップ
                 if (!IsReadingAloud)
                 {
-                    Console.WriteLine("自動送り実行");
+                    // Console.WriteLine("自動送り実行"); // 軽量化のためコメントアウト
                     _autoAdvanceTimer.Stop();
                     NextRequested?.Invoke(this, EventArgs.Empty);
                 }
                 else
                 {
-                    Console.WriteLine("読み上げ中のため自動送りをスキップ、5秒後に再チェック");
+                    // Console.WriteLine("読み上げ中のため自動送りをスキップ、5秒後に再チェック"); // 軽量化のためコメントアウト
                     // 読み上げ中の場合は5秒後に再チェック
                     _autoAdvanceTimer.Stop();
                     _autoAdvanceTimer.Interval = TimeSpan.FromSeconds(5);
@@ -2041,7 +2051,7 @@ namespace DesktopMascot
         private void InitializeComponent()
         {
             Width = 420;  // 横幅はそのまま
-            Height = 280;  // 元のサイズに戻す
+            Height = 300;  // 280px → 300px に拡大（ボタンが隠れないように）
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -2166,7 +2176,7 @@ namespace DesktopMascot
 
             var contentScrollViewer = new ScrollViewer
             {
-                MaxHeight = 120,  // スクロールエリアの最大高さ
+                MaxHeight = 100,  // スクロールエリアの最大高さ（120→100に縮小してボタン用スペース確保）
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 Content = ContentBlock
             };
@@ -2290,15 +2300,41 @@ namespace DesktopMascot
             // タグ表示（技術ブログタブの場合のみ）
             UpdateTags(tags);
 
-            // サムネイル画像の設定
+            // サムネイル画像の設定（非同期読み込みで高速化）
+            ThumbnailImage.Source = null; // 先にクリア
             if (!string.IsNullOrEmpty(thumbnailUrl))
             {
-                ThumbnailImage.Source = new BitmapImage(new Uri(thumbnailUrl));
                 ThumbnailImage.Visibility = Visibility.Visible;
+                // 非同期でサムネイルを読み込み（UIをブロックしない）
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        var bitmap = new BitmapImage();
+                        bitmap.BeginInit();
+                        bitmap.UriSource = new Uri(thumbnailUrl);
+                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                        bitmap.EndInit();
+                        bitmap.Freeze(); // 別スレッドからUIスレッドに渡すため
+
+                        // UIスレッドで設定
+                        Dispatcher.Invoke(() =>
+                        {
+                            ThumbnailImage.Source = bitmap;
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"サムネイル読み込みエラー: {ex.Message}");
+                        Dispatcher.Invoke(() =>
+                        {
+                            ThumbnailImage.Visibility = Visibility.Collapsed;
+                        });
+                    }
+                });
             }
             else
             {
-                ThumbnailImage.Source = null;
                 ThumbnailImage.Visibility = Visibility.Collapsed;
             }
 
@@ -2415,6 +2451,7 @@ namespace DesktopMascot
         private VoiceVoxService _voiceVoxService;
         private ArticleAggregatorService _articleAggregator;
         private SpeechBubbleWindow _speechBubble;
+        private VolumeControlWindow _volumeControl;
         private DispatcherTimer _rssTimer;
         private DispatcherTimer _weatherTimer;
         private DispatcherTimer _blinkTimer;
@@ -2460,6 +2497,7 @@ namespace DesktopMascot
             StartIdleAnimation();
             StartRssAutoUpdate();
             StartWeatherAutoUpdate();
+            InitializeVolumeControl(); // 音量コントロールをデフォルトで表示
         }
 
         private void InitializeComponent()
@@ -2488,7 +2526,8 @@ namespace DesktopMascot
                 Cursor = Cursors.Hand,
                 Stretch = Stretch.Uniform,  // アスペクト比を保持して均等拡縮
                 StretchDirection = StretchDirection.Both,
-                Margin = new Thickness(0, 30, 0, 0) // 天気表示のスペースを空けるため下に移動
+                Margin = new Thickness(0, 30, 0, 0), // 天気表示のスペースを空けるため下に移動
+                CacheMode = new BitmapCache() // レンダリングパフォーマンス向上のためキャッシュ有効化
             };
 
             // 天気情報全体のコンテナ
@@ -2912,7 +2951,7 @@ namespace DesktopMascot
                 _lipSyncTimer.Interval = TimeSpan.FromMilliseconds(50); // 20fps
                 _lipSyncTimer.Tick += LipSyncTimer_Tick;
 
-                Console.WriteLine("リップシンクシステム初期化完了");
+                // Console.WriteLine("リップシンクシステム初期化完了"); // 軽量化のためコメントアウト
             }
             catch (Exception ex)
             {
@@ -2929,7 +2968,7 @@ namespace DesktopMascot
                 _isLipSyncActive = true;
                 _audioCapture.StartRecording();
                 _lipSyncTimer.Start();
-                Console.WriteLine("リップシンク開始");
+                // Console.WriteLine("リップシンク開始"); // 軽量化のためコメントアウト
             }
             catch (Exception ex)
             {
@@ -2947,7 +2986,7 @@ namespace DesktopMascot
 
                 // 通常画像に戻す
                 ResetToNormalImage();
-                Console.WriteLine("リップシンク停止");
+                // Console.WriteLine("リップシンク停止"); // 軽量化のためコメントアウト
             }
             catch (Exception ex)
             {
@@ -3007,9 +3046,9 @@ namespace DesktopMascot
                     ResetToNormalImage();
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"リップシンクタイマーエラー: {ex.Message}");
+                // 頻繁に呼ばれるため、エラー出力は省略（軽量化）
             }
         }
 
@@ -3034,6 +3073,10 @@ namespace DesktopMascot
                 StopLipSync();
                 _audioCapture?.Dispose();
                 _lipSyncTimer?.Stop();
+
+                // 音量コントロールの解放
+                _volumeControl?.Close();
+                _volumeControl = null;
 
                 // 設定保存
                 _settings.WindowLeft = Left;
@@ -3115,12 +3158,14 @@ namespace DesktopMascot
             _settings.WindowLeft = Left;
             _settings.WindowTop = Top;
             _settings.Save();
-            
+
             // スピーチバブルが表示されている場合は位置を更新
             if (_speechBubble != null && _speechBubble.IsVisible)
             {
                 UpdateSpeechBubblePosition();
             }
+
+            // 音量コントロールはマスコットから独立して移動可能なため、位置更新しない
         }
 
         private void UpdateSpeechBubblePosition()
@@ -3355,13 +3400,21 @@ namespace DesktopMascot
             var updateItem = new MenuItem { Header = "RSS更新" };
             updateItem.Click += async (s, args) => await UpdateRssAsync();
 
-            var clickThroughItem = new MenuItem 
-            { 
+            var clickThroughItem = new MenuItem
+            {
                 Header = _isClickThrough ? "クリックスルー解除" : "クリックスルー有効",
                 IsCheckable = true,
                 IsChecked = _isClickThrough
             };
             clickThroughItem.Click += ToggleClickThrough;
+
+            var volumeControlItem = new MenuItem
+            {
+                Header = "音量コントロール表示",
+                IsCheckable = true,
+                IsChecked = _volumeControl?.IsVisible ?? false
+            };
+            volumeControlItem.Click += ToggleVolumeControl;
 
             var exitItem = new MenuItem { Header = "終了" };
             exitItem.Click += (s, args) => Application.Current.Shutdown();
@@ -3370,6 +3423,7 @@ namespace DesktopMascot
             contextMenu.Items.Add(new Separator());
             contextMenu.Items.Add(updateItem);
             contextMenu.Items.Add(clickThroughItem);
+            contextMenu.Items.Add(volumeControlItem);
             contextMenu.Items.Add(new Separator());
             contextMenu.Items.Add(exitItem);
 
@@ -3647,6 +3701,54 @@ namespace DesktopMascot
             else
             {
                 Win32Api.SetWindowLong(hwnd, Win32Api.GWL_EXSTYLE, extendedStyle & ~Win32Api.WS_EX_TRANSPARENT);
+            }
+        }
+
+        private void InitializeVolumeControl()
+        {
+            try
+            {
+                _volumeControl = new VolumeControlWindow();
+
+                // 初回のみマスコット近くに配置（設定ファイルがない場合）
+                if (!System.IO.File.Exists("VolumeControlSettings.json"))
+                {
+                    var mascotPosition = new Point(Left, Top);
+                    _volumeControl.UpdatePosition(mascotPosition, Width, Height);
+                }
+
+                // デフォルトで表示
+                _volumeControl.ShowWithFade();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"音量コントロールの初期化に失敗しました: {ex.Message}");
+            }
+        }
+
+        private void ToggleVolumeControl(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (_volumeControl == null)
+                {
+                    InitializeVolumeControl();
+                    return;
+                }
+
+                if (_volumeControl.IsVisible)
+                {
+                    _volumeControl.HideWithFade();
+                }
+                else
+                {
+                    _volumeControl.ShowWithFade();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"音量コントロールの表示に失敗しました: {ex.Message}",
+                    "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }
